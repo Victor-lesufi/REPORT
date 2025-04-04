@@ -1,9 +1,9 @@
 <?php
 session_start();
 
-// Handle form submission via AJAX
+
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
-    // Database connection
+    
     $servername = "localhost";
     $username = "root";
     $password = "";
@@ -11,32 +11,29 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_SERVER['HTTP_X_REQUESTED_WIT
 
     $conn = new mysqli($servername, $username, $password, $dbname);
 
-    // Check connection
     if ($conn->connect_error) {
         die(json_encode(['success' => false, 'message' => 'Database connection failed.']));
     }
 
-    // Get raw POST data
     $data = json_decode(file_get_contents('php://input'), true);
 
-    // Extract data
+   
     $username = mysqli_real_escape_string($conn, $data['username']);
     $password = $data['password'];
     $role = mysqli_real_escape_string($conn, $data['role']);
 
-    // Query to check username
+    
     $sql = "SELECT * FROM users WHERE username = '$username'";
     $result = $conn->query($sql);
 
     if ($result->num_rows > 0) {
         $row = $result->fetch_assoc();
         
-        // Verify password
+        
         if (password_verify($password, $row['password'])) {
             $_SESSION['username'] = $username;
-            $_SESSION['role'] = $role; // Store the role in the session
-
-            // Redirect based on the role
+            $_SESSION['role'] = $role; 
+           
             if ($role === 'class_teacher') {
                 echo json_encode(['success' => true, 'redirect' => 'dashboard.php']);
                 exit();
@@ -131,7 +128,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_SERVER['HTTP_X_REQUESTED_WIT
         .error {
             color: red;
             margin-bottom: 10px;
-            min-height: 20px; /* Ensure space for error messages */
+            min-height: 20px; 
         }
     </style>
 </head>
@@ -141,7 +138,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_SERVER['HTTP_X_REQUESTED_WIT
     <div class="error"></div>
     <h2 id="loginTitle">Login</h2>
     <form id="loginForm" method="post">
-        <!-- Role Selection Dropdown -->
+        
         <label for="role">Select Role:</label>
         <select id="role" name="role" required>
             <option value="" disabled selected>-- Select Role --</option>
@@ -149,30 +146,26 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_SERVER['HTTP_X_REQUESTED_WIT
             <option value="class_teacher">Class Teacher</option>
         </select>
 
-        <!-- Username Input -->
+        
         <input type="text" id="username" name="username" placeholder="Enter your username" required>
 
-        <!-- Password Input -->
         <input type="password" id="password" name="password" placeholder="Enter your password" required>
 
-        <!-- Signup Link -->
         <a href="signup.php">Don't have an account? Signup</a>
 
-        <!-- Login Button -->
         <button type="submit">Login</button>
     </form>
 </div>
 
 <script>
-    // Add event listener to the dropdown
+    
     document.getElementById('role').addEventListener('change', function () {
-        // Get the selected role
+        
         const selectedRole = this.value;
 
-        // Get the title element
         const loginTitle = document.getElementById('loginTitle');
 
-        // Update the title based on the selected role
+        
         if (selectedRole === 'teacher') {
             loginTitle.textContent = 'Logging in as a Teacher';
         } else if (selectedRole === 'class_teacher') {
@@ -182,36 +175,36 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_SERVER['HTTP_X_REQUESTED_WIT
         }
     });
 
-    // Handle form submission using AJAX
+ 
     document.getElementById('loginForm').addEventListener('submit', function(event) {
-        event.preventDefault(); // Prevent default form submission
+        event.preventDefault(); 
 
-        // Clear previous error messages
+        
         document.querySelector('.error').textContent = '';
 
-        // Collect form data
+       
         const formData = {
             username: document.getElementById('username').value,
             password: document.getElementById('password').value,
             role: document.getElementById('role').value
         };
 
-        // Send data to the server using Fetch API
-        fetch('', { // Submit to the same file
+        
+        fetch('', { 
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-Requested-With': 'XMLHttpRequest' // Identify AJAX request
+                'X-Requested-With': 'XMLHttpRequest' 
             },
             body: JSON.stringify(formData)
         })
-        .then(response => response.json()) // Parse the JSON response
+        .then(response => response.json())
         .then(data => {
             if (data.success) {
-                // Redirect to the appropriate page
+               
                 window.location.href = data.redirect;
             } else {
-                // Display error message in the .error div
+                
                 document.querySelector('.error').textContent = data.message;
             }
         })
