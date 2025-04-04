@@ -1,0 +1,44 @@
+
+body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+}
+form {
+    margin-bottom: 20px;
+}
+input[type="text"] {
+    padding: 8px;
+    width: 300px;
+    font-size: 16px;
+}
+input[type="submit"] {
+    padding: 8px 16px;
+    font-size: 16px;
+    cursor: pointer;
+    margin-right: 10px;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+}
+th, td {
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: center;
+}
+th {
+    background-color: #f4f4f4;
+}
+.error {
+    color: red;
+    font-weight: bold;
+    margin: 10px 0;
+}
+.debug-info {
+    background-color: #f8f9fa;
+    border: 1px solid #ddd;
+    padding: 10px;
+    margin-top: 20px;
+    font-family: monospace;
+}

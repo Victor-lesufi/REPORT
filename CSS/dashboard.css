@@ -1,0 +1,20 @@
+.container {
+    display: flex;
+    justify-content: flex-end; /* Aligns buttons to the right */
+    position: absolute;
+    top: 0;
+    right: 0;
+    padding: 10px;
+    gap: 10px; /* Adjusts space between buttons */
+}
+
+.btn {
+    background-color: blue;
+    color: white;
+    padding: 10px 20px;
+    border: none;
+    cursor: pointer;
+}
+a{
+    text-decoration: none;
+}
