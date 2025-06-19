@@ -4,10 +4,7 @@ session_start();
 
 if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower($_SERVER['HTTP_X_REQUESTED_WITH']) == 'xmlhttprequest') {
     
-    $servername = "localhost";
-    $username = "root";
-    $password = "";
-    $dbname = "report";
+    include('connection.php'); // Include your database connection file
 
     $conn = new mysqli($servername, $username, $password, $dbname);
 
@@ -151,6 +148,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_SERVER['HTTP_X_REQUESTED_WIT
 
         <input type="password" id="password" name="password" placeholder="Enter your password" required>
 
+        <a href="forgot.php">forgot password</a>
         <a href="signup.php">Don't have an account? Signup</a>
 
         <button type="submit">Login</button>
@@ -171,7 +169,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_SERVER['HTTP_X_REQUESTED_WIT
         } else if (selectedRole === 'class_teacher') {
             loginTitle.textContent = 'Logging in as a Class Teacher';
         } else {
-            loginTitle.textContent = 'Login'; // Default title
+            loginTitle.textContent = 'Login'; 
         }
     });
 

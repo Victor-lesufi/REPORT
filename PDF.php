@@ -1,26 +1,18 @@
 <?php
-session_start();
-
-
-if (!isset($_SESSION['username'])) {
-    $_SESSION['username'] = "Guest";
-}
-
 require('fpdf186/fpdf.php');
-
 
 class PDF extends FPDF
 {
     private $loggedInName;
 
-    function __construct($loggedInName) {
+    function __construct($loggedInName = "Guest") {
         parent::__construct();
         $this->loggedInName = $loggedInName;
     }
 
     function Header() {
         $this->SetFont('Arial', 'B', 14);
-        $this->Cell(0, 10, 'Student Report for: ' . $this->loggedInName, 0, 1, 'C');
+        $this->Cell(0, 10, 'Report for: ' . $this->loggedInName, 0, 1, 'C');
         $this->Ln(5);
     }
 
@@ -30,17 +22,15 @@ class PDF extends FPDF
         $this->Cell(0, 10, 'Page ' . $this->PageNo() . '/{nb}', 0, 0, 'C');
     }
 
-    function CreateTable($header, $data) {
-    
+    function CreateStudentTable($header, $data) {
         $columnWidths = [35, 18, 18, 20, 20, 22, 22, 22, 13]; 
-  
+
         $this->SetFont('Arial', 'B', 7);
         foreach ($header as $index => $col) {
             $this->Cell($columnWidths[$index], 7, $col, 1, 0, 'C');
         }
         $this->Ln();
 
-     
         $this->SetFont('Arial', '', 7);
         foreach ($data as $row) {
             foreach ($row as $index => $cell) {
@@ -52,7 +42,10 @@ class PDF extends FPDF
 }
 
 
-$loggedInName = $_SESSION['username'];
+if (!isset($_GET['student']) || empty(trim($_GET['student']))) {
+    die("No student specified.");
+}
+$studentName = trim(urldecode($_GET['student']));
 
 
 $host = 'localhost';
@@ -65,51 +58,51 @@ try {
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
 
     
-    $stmt = $pdo->query("SELECT student_name, english, sepedi, mathematics, geography, life_science, physical_science, life_orientation FROM student_details");
+    $stmt = $pdo->prepare("SELECT student_name, english, sepedi, mathematics, geography, life_science, physical_science, life_orientation FROM student_details WHERE student_name = ?");
+    $stmt->execute([$studentName]);
     $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-   
-    $header = ['Student Name', 'English', 'Sepedi', 'Mathematics', 'Geography', 'Life Science', 'Physical Science', 'Life Orientation', 'Result'];
+    if (count($data) === 0) {
+        die("Student not found: $studentName");
+    }
 
     
+    $header = ['Student Name', 'English', 'Sepedi', 'Mathematics', 'Geography', 'Life Science', 'Physical Science', 'Life Orientation', 'Result'];
     $tableData = [];
+
     foreach ($data as $row) {
         $subjects = [
-            $row['english'],
-            $row['sepedi'],
-            $row['mathematics'],
-            $row['geography'],
-            $row['life_science'],
-            $row['physical_science'],
-            $row['life_orientation']
+            $row['english'] ?? '-',
+            $row['sepedi'] ?? '-',
+            $row['mathematics'] ?? '-',
+            $row['geography'] ?? '-',
+            $row['life_science'] ?? '-',
+            $row['physical_science'] ?? '-',
+            $row['life_orientation'] ?? '-'
         ];
 
-       
         $failCount = 0;
         foreach ($subjects as $mark) {
-            if ((int)$mark < 50) {
+            if ($mark !== '-' && (int)$mark < 50) {
                 $failCount++;
             }
         }
 
         $result = ($failCount >= 3) ? 'Fail' : 'Pass';
 
-       
-        $tableData[] = array_merge(
-            [$row['student_name']],
-            $subjects,
-            [$result]
-        );
+        $tableData[] = array_merge([$row['student_name']], $subjects, [$result]);
     }
 
-  
-    $pdf = new PDF($loggedInName);
+    
+    $pdf = new PDF($studentName);
     $pdf->AliasNbPages();
     $pdf->AddPage();
-    $pdf->CreateTable($header, $tableData);
-    $pdf->Output();
+    $pdf->CreateStudentTable($header, $tableData);
+
+    
+    $pdf->Output('I', "Report_$studentName.pdf");  
 
 } catch (PDOException $e) {
-    die("Database connection failed: " . $e->getMessage());
+    die("Database error: " . $e->getMessage());
 }
 ?>

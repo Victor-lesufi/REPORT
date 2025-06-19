@@ -3,10 +3,7 @@
 session_start();
 
 
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "report";
+include('connection.php'); // Include your database connection file
 
 $conn = new mysqli($servername, $username, $password, $dbname);
 

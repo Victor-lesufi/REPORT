@@ -1,0 +1,2156 @@
+#!/usr/bin/php -dmbstring.func_overload=0 
+<?php
+//use \setasign\Fpdi\Fpdi;
+use \Mpdf\Mpdf; 
+use Mpdf\Config\ConfigVariables;
+use Mpdf\Config\FontVariables;
+use \Mpdf\HTMLParserMode;
+
+if (!isset($config))
+	$config = new \stdClass;
+if (!isset($config->Debug))
+	$config->Debug = 3;
+if (!isset($config->errorlog))
+	$config->errorlog = 'logs/gazette_error_legala.log';
+
+require_once('tracker_builder.php');
+require_once('libraries/mpdf/vendor/autoload.php');
+require_once('modules/Gazette/handlers/pagebuilder.php');
+//require_once('modules/Gazette/handlers/generators/createGazette_legala.php');
+
+	/**
+	 * Global Error Handler.
+	 *
+	 * @param Refer to https://www.php.net/manual/en/class.errorexception.php
+	 * @return None
+	 * @throws \ErrorException
+	 */
+	function error_handler($severity, $message, $filename, $lineno) {
+		global $config;
+		//if (!in_array($message, [E_ERROR, E_PARSE, E_CORE_ERROR, E_USER_ERROR, E_ERROR])) { return; }
+
+		$msg = (new DateTime())->format('Y-m-d:H:i:s.u')."| $severity Message: $message".PHP_EOL;
+		file_put_contents('logs/gazette_error_legala.log',"Error in f=$filename | l=$lineno | message=".$msg,FILE_APPEND);
+
+    //throw new ErrorException($message, 1, $severity, $filename, $lineno);
+	}
+	/**
+	 * Global Time Handler.
+	 *
+	 * @param Refer to https://www.ice4po.co.za/manual/en/class.nako.php
+	 * @return DateTime object formated in Y-m-d:H:i:s.u
+	 * @throws None
+	 */
+	function nako() {
+		return (new DateTime())->format('Y-m-d:H:i:s.u');
+	}
+	set_error_handler('error_handler');
+
+
+if (!function_exists('wecho')) {
+	function wecho ($msg) {
+		$file = 'logs/fpdi-combine.log';
+		//file_put_contents('logs/fpdi-combine.log',strftime('%Y-%m-%d:%H:%M:%S.%u', microtime(true)).'| '.$msg.PHP_EOL,FILE_APPEND);
+		if (substr($msg,0,1) != '|') $msg = '| '.$msg;
+		if (substr($msg,strlen($msg)-1,1) != PHP_EOL) $msg .= PHP_EOL;
+		file_put_contents($file,(new DateTime())->format('Y-m-d:H:i:s.u')."$msg",FILE_APPEND);
+	}
+}
+
+if (!function_exists('get_dates')) {
+/*
+ * Function to create a Language months for English and Afrikaans - ensure to expand to cover all 12 languages
+* @param String $current_pubdate Publication displayed
+* @return None
+* @throws None
+*/
+function get_dates($nid,$pubdate) {
+	$y=substr($pubdate,0,4);
+	$mon=substr($pubdate,5,2);
+	$d=substr($pubdate,8,2);
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| START Reformarting Time $pubdate | day = $d | month = $mon | Year = $y",3);
+	$tm = mktime(0,0,0,$mon,$d,$y);
+	$month = strtoupper(date('F',$tm));
+	$m = date('n',$tm);
+	$day = date('d',$tm);
+	$year = date('Y',$tm);
+
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FINISH Reformarting Time $pubdate | day = $day | month = $month | Year = $year",3);
+	$lang_month = array (1=>'Januarie', 'Februarie', 'Maart', 'April', 'Mei', 'Junie', 'Julie', 'Augustus', 'September', 'Oktober', 'November', 'Desember');
+	return array(
+		'E'=>$day.' '.$month.' '.$year,
+		'A'=>$day.' '.strtoupper($lang_month[$m]).' '.$year,
+	);
+}
+}
+if (!function_exists('file_log_contents')) {
+/**
+* Format consistent logging
+* 
+* @param String $msg The message to be logged/displayed
+* @param Integer $Debug Debug value lowest is =0)
+* @return None
+* @throws None
+**/
+	function file_log_contents($file, $msg,$Debug=1) {
+		global $config;
+		$d=isset($config->Debug)?$config->Debug:3;
+		if ($Debug <= $d) {
+			$msg = trim($msg);
+			if (substr($msg,0,1) != '|') $msg = '| '.$msg;
+			if (substr($msg,strlen($msg)-1,1) != PHP_EOL) $msg .= PHP_EOL;
+			file_put_contents($file,(new DateTime())->format('Y-m-d:H:i:s.u')."$msg",FILE_APPEND);
+		}
+	}
+}
+function get_center_coordinates($nid,$A4_WIDTH, $A4_HEIGHT, $width, $height) {
+	$wScale = $A4_WIDTH / $width;
+	$hScale = $A4_HEIGHT / $height;
+	$cscale = min($wScale, $hScale); //Get scale value
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Scale = $cscale".PHP_EOL,3);
+	return array(($cscale * $width), ($cscale * $height));
+}
+function get_center_page($nid, &$pdf, &$templateId) {
+	$A4_WIDTH = 210; //TODO: add configuration to avoid hardcoded
+	$A4_HEIGHT = 297; //TODO: add configuration to avoid hardcoded
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| START Centering Source Page on A4($A4_WIDTH x $A4_HEIGHT) | Nid = $nid".PHP_EOL,3);
+	$size = $pdf->getTemplateSize($templateId);
+	/*
+		["width"]=> float(xyz)
+		["height"]=> float(xyz)
+		["orientation"]=> string(1) "L"
+	 */
+	$iwidth = round($size["width"]);
+	$iheight = round($size["height"]);
+	if (1==0 && $iwidth > $A4_WIDTH) {
+		$iwidth = $A4_WIDTH-10;
+		$iheight = $A4_HEIGHT-($A4_HEIGHT*($iwidth/$iheight));
+	}
+	$orientation = $size['orientation'];
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Source Page[$orientation] (w=$iwidth, h=$iheight) | Nid = $nid".PHP_EOL,4);
+	list($nwidth, $nheight) = get_center_coordinates($nid, $A4_WIDTH, $A4_HEIGHT,$iwidth,$iheight);
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Center Page[$orientation] (w=$nwidth, h=$nheight) | Nid = $nid".PHP_EOL,1);
+	$width = round($nwidth);
+	$height = round($nheight);
+	$x1 = ($A4_HEIGHT - $width) / 2;
+	$y = ($A4_HEIGHT - $iheight) / 2;
+	$y1 = ($A4_WIDTH - $height) / 2;
+	$x = ($A4_WIDTH - $iwidth) / 2;
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| New Page[$orientation] (x=$x, y=$y, w=$width, h=$height) | Nid = $nid".PHP_EOL,1);
+	return array($x,$y,$iwidth,$iheight,$orientation);
+}
+
+/*
+ * Function to create the final Gazette PDF
+ * @param $pdf <Mpdf-Object> $engine Object or null
+ * @param $nid <int> Submission Number
+ * @param $inputfile <string> path to the html input file
+ * @param $gzt_stylesheets <string> path to the css inputfile
+ * @param $pdfile <string> path for the final output pdf for the gazette
+ * @param $engine <string> internal or weasyprint
+*/
+function generate_gzt_pdf($pdf_geni, $nid, $inputfile, $gzt_stylesheets, $pdfile) {
+	$engine = $pdf_geni['engine'];
+	if ($engine == 'internal') {
+		$pdf = $pdf_geni['generator'];
+		$msg = __FUNCTION__."| Creating PDF using engine = internal | Content from $inputfile to $pdfile\n";
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+		$tmpPath = 'cache/gazettes/tmp/'.$nid;
+		if (!is_dir($tmpPath)) {
+			$msg = __FUNCTION__."| Try to create gazette tmp folder | Path = $tmpPath";
+			if (!@mkdir($tmpPath,0775,true)) {
+				$msg = __FUNCTION__."| FAILED";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg.PHP_EOL.'---EXIT---',1);
+				return array('success'=>false,'message'=>__FUNCTION__.'| Storage Error: '.$msg);
+			} else {
+				$msg = __FUNCTION__."| PASSED";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+			}
+		}
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__.'| Calling Stylesheet',3);
+		//If input CSS is External then uncomment or condition
+		$pdf_geni['generator']->WriteHTML(file_get_contents($gzt_stylesheets),1); //\Mpdf\HTMLParserMode::HEADER_CSS);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__.'| Calling Internal::writeHTML',3);
+		$pdf_geni['generator']->WriteHTML(file_get_contents($inputfile));
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__.'| Calling Internal::TOCpagebreak',3);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__.'| Creating PDF = '.$pdfile,3);
+		$pdf_geni['generator']->Output($pdfile,'F');
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__.'| SAVED PDF = '.$pdfile,3);
+	} else
+	if ($engine == 'weasyprint') {
+		$createPDF = "/usr/bin/$engine -f pdf $inputfile $pdfile --stylesheet $gzt_stylesheets 2>> logs/generatePDF_Ordinary_$nid.log";
+		$msg = __FUNCTION__."| Creating PDF using engine = $engine | Content from $inputfile to $pdfile | cmd [$createPDF]\n";
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+		$makeContentPDF = @shell_exec($createPDF);
+		$msg = __FUNCTION__."| Created PDF using engine = $engine | Content from $inputfile to $pdfile | cmd [$createPDF] | return = $makeContentPDF\n";
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+	} else {
+		$msg = __FUNCTION__."| FAILED to Create PDF using UNKNOWN engine = $engine | SKIP Content from $inputfile to $pdfile\n";
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+		return array('success'=>false,'message'=>__FUNCTION__.'| Permission Denied: '.$msg);
+	}
+	if (!file_exists($pdfile)) {
+		$msg = __FUNCTION__."| PDF not created: $pdfile | FAILED to add Content from $inputfile\n";
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+		return array('success'=>false,'message'=>'GZT Content FINAL Compile FAILED: '.$msg);
+	} else {
+		$msg = __FUNCTION__."| Added Content from $inputfile\n";
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+
+		$countPDF = "/usr/bin/pdfinfo $pdfile | grep 'Pages'";
+		$msg = __FUNCTION__."| Confirming Content Pages: [$countPDF]\n";
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+
+		$countContentPDF = @shell_exec($countPDF);
+		$cPages = trim(explode(':',$countContentPDF)[1]);
+		if (empty($cPages)) {
+			$msg = __FUNCTION__."| FAILED to get Content Pages from $pdfile\n";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+			return array('success'=>false,'message'=>"GZT Content Compiler FAILED: Missing Pages from Output PDF = $nid");
+		}
+		$msg = __FUNCTION__."| GOT Pg | Confirmed Content Pages = $cPages\n";
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+	}
+	//$msg="$toc Pages = $countContentPDF\n";
+	//Generate per group
+	$msg = __FUNCTION__."| Generation COMPLETED | input = $inputfile | Pages = $cPages | Return = [$pdfile]\n";
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+	return array('success'=>true, 'message' => __FUNCTION__."| Gazette Generated", 'pdf' => $pdfile, 'pages' => $cPages);
+}
+/*
+ * Function to update the Gazette TOC Page Numbers
+ * @param $pdf PDF Object for internal pdf engine
+ * @param $nid Submission Number
+ * @param $gzt_files is an array of gzt files sorted by form and province/dept
+ * @param $gzt_info is an array of table of contents and other properties of the gazette
+*/
+function generate_final_content(&$pdf,$nid,&$gzt_files,&$gzt_info,&$seq_sections ,$page_offset) {
+	if (!isset($gzt_info['toc_items']))
+		$gzt_info['toc_items'] = array ();
+
+	$tm_start = microtime(true);
+	$totalTOCPages = $page_offset;
+	$divisor = $gzt_info['divisor'];
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| START | gzt_info = ".print_r($gzt_info,true)."\n------\n",3);
+	$ts = microtime(true); //Start the Clock
+
+	$tjekae_files = count($gzt_files);
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| LOADING | page offset = $page_offset | Gazette files by Forms = $tjekae_files | gzt_files = ".print_r($gzt_files,true),3);
+	$head_sections = $head_items = array();
+	//CREATE TOC PDF pages from each file
+	$gf = 0;
+	$multiple_toc = false;
+	$current_section = '';
+	$counted_sections = 0;
+	if (isset($gzt_info['gzt_title'])) {
+		foreach ($gzt_info['gzt_title'] as $gzt_groupby=>$gzt_content_file) {
+			if (!is_array($gzt_content_file) || !isset($gzt_content_file['E']) || !isset($gzt_content_file['A'])) {
+				$errormsg = __FUNCTION__."| ERROR: Gazette Title MISSING for $gzt_groupby";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+				tracker_builder($nid,$tm_start,'failed:PDF Notice Content Generation Failed');
+				return array('success'=>false,'message'=>$errormsg);
+			}
+			$gzt_tplfolder = $gzt_info['tplfolder'];
+			$sequence = get_noticetype_sequence($nid, strtoupper($gzt_groupby),$gzt_tplfolder);
+			if ($sequence == 0) { 
+				$errormsg = __FUNCTION__."| ERROR: NO Gazette Sequence | FORM = $gzt_groupby | tpl = $gzt_tplfolder";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+				tracker_builder($nid,$tm_start,'failed:PDF Notice Content Generation Failed');
+				return array('success'=>false,'message'=>$errormsg);
+			} else {
+				$msg = __FUNCTION__."| FOUND Gazette Sequence = $sequence | FORM = $gzt_groupby | tpl = $gzt_tplfolder";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+			}
+			$seq_sections[$sequence] = $gzt_groupby;
+			$title = $gzt_content_file['E'];
+			$hitem = $gzt_content_file['A'];
+			$head_sections[$gzt_groupby] = $title;
+			$msg = __FUNCTION__."| File=$gf | head items FOUND for $gzt_groupby | hsections = $title";
+			$id_sec = 'SECTION';
+			if (isset($gzt_content_file[$id_sec])) {
+				if ($current_section != $gzt_content_file[$id_sec]) {
+					$counted_sections++;
+					$current_section = $gzt_content_file[$id_sec];
+					if ($counted_sections > 1 && !$multiple_toc) { //Check Once
+						$multiple_toc = true;
+						$msg .= "| Multiple TOC required";
+					}
+				}
+				if (isset($gzt_content_file[$id_sec]) && $gzt_content_file[$id_sec] == 'SECTION2') {
+					$hitem = '<span class="titem">'.$gzt_content_file['A'].'</span>';
+					$msg .= "| Form = $gzt_groupby | combined head item for Level 2 or Level 3: $hitem";
+
+				} else
+					$msg .= "| id_sec = $id_sec | Missing in gzt_content_file | Single head item = $hitem | group = $gzt_groupby | Nid = $nid";
+			} else
+			  $msg .= "| Single head item = $hitem | group = $gzt_groupby | Nid = $nid";
+
+			$head_items[$gzt_groupby] = $hitem;
+			//$gzt_info['toc_items'][$gzt_groupby] = array ($gzt_content_file['title'][$groupby] => null);
+			//$gzt_info['head_items'][$gzt_groupby] = $gzt_content_file['title'][$groupby];
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+		}
+	} else {
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | NO gzt_title in gzt_files SKIPPING | Nid = $nid | ".print_r($gzt_files,true).PHP_EOL,3);
+	}
+	ksort($seq_sections,SORT_NUMERIC); //Ensure Sequence is kept for both TOC and Content
+	$tjekae_seq = count($seq_sections);
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| ksorted Sequenced Forms = $tjekae_seq | sections = ".print_r($seq_sections,true),3);
+	try {
+		$inifile = 'layouts/gazettes/legala/orderby.ini';
+		if (!file_exists($inifile)) {
+			$errormsg = __FUNCTION__."| WARNING | TOC Groupby Config missing:  $inifile";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+			tracker_builder($nid,$tm_start,'failed:PDF Notice Content Generation Failed');
+			return array('success'=>false,'message'=>$errormsg);
+		} else {
+			$msg = __FUNCTION__."| WARNING | USE TOC Groupby Config:  $inifile";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+			$ini = parse_ini_file ($inifile, true);
+			if (count($ini) == 0) {
+				$errormsg = __FUNCTION__."| WARNING: EMPTY TOC Groupby Configuration file: $inifile";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+				tracker_builder($nid,$tm_start,'failed:PDF Notice Content Generation Failed');
+				return array('success'=>false,'message'=>$errormsg);
+			}
+		}
+		if (!isset($ini) || !isset($ini['orderby'])) {
+			$errormsg = __FUNCTION__."| FATAL ERROR: MISSING TOC Orderby in config file [$inifile]";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+			tracker_builder($nid,$tm_start,'failed:PDF Notice Content Generation Failed');
+			return array('success'=>false,'message'=>$errormsg);
+		}
+	} catch (Exception $p) {
+		$errormsg = __FUNCTION__."| FATAL ERROR: Failed to Load TOC Groupby config file [$inifile]: ".$p->getMessage();
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+		tracker_builder($nid,$tm_start,'failed:PDF Notice Content Generation Failed');
+		return array('success'=>false,'message'=>$errormsg);
+	}
+	//--Load the Separator Configuration
+	//$separator_ini = separator_config($tpl);
+	$gzt_pdf_file = $gzt_final_output = $bgzt_html_file = $gzt_html_file = $gzt_css_file = '';
+
+	if ($pdf['engine'] == 'weasyprint') {
+		$gzt_toc_file = dirname($pdf['output_file']).'/toc_index.html';
+		file_put_contents($gzt_toc_file,'<section id="contents"><h2>Table of contents</h2>'.PHP_EOL);
+	}
+	//Default return
+	$gzt_generated_file = array('success'=>false,'message'=>__FUNCTION__.'| FAILED | NO Gazette Content Generated');
+
+	$noticetype_rule = '';
+	$seen = array();
+	$pageCount = $pages_tjekae = 0;
+	$tp = 1; //Always assume at least one Content page exists otherwise bail out
+	$toc_pages = $page_offset;
+	foreach ($seq_sections as $fid=>$sectionid) {
+		$head_pdfPage = 0;
+		$html_file = $css_file = '';
+		$forms_tjekae = count($gzt_files[$sectionid]);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| START NoticeType_$fid: Sequenced Form = $sectionid | Notices count = $forms_tjekae",3);
+		if ($pdf['engine'] == 'weasyprint') {
+			file_put_contents($gzt_toc_file,"<h3>[$sectionid]</h3>".'<div class="toc">'.PHP_EOL, FILE_APPEND);
+		}
+
+		//Orderby TOC and Content - cost at max 9 Provinces
+		$order = 0;
+		$ordered_gzt_files=array();
+	 	foreach ($gzt_files[$sectionid] as $gzt_content_file) {
+			if (!is_array($gzt_content_file)) {
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | MISSING Data Structure | Cannot Reorder content data: ".var_export($gzt_content_file,true)." | Nid = $nid".PHP_EOL,3);
+				continue;
+			}
+			$order++;
+			$bgzt_file = basename($gzt_content_file['filepath']);
+			$pnum = $gzt_content_file['toc'];
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | TRY Reorder content data: $order : $pnum | Nid = $nid".PHP_EOL,4);
+			if (!isset($ordered_gzt_files[$pnum])) {
+				$ordered_gzt_files[$pnum] = $gzt_content_file; //TODO: THIS could be costly
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | Reorder content data: $order : $pnum | Nid = $nid".PHP_EOL,3);
+			} else
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | ALREADY reordered content data: $order : $pnum | Nid = $nid".PHP_EOL,3);
+		}
+
+		foreach ($ini['orderby'] as $orderby=>$gzt_toc) { 
+			if (!isset($ordered_gzt_files[$orderby])) {
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| SKIP Empty Province = $orderby | No content data | Nid = $nid".PHP_EOL,3);
+				continue;
+			}
+			$gf++;
+			$gzt_content_file = $ordered_gzt_files[$orderby];
+			if (!is_array($gzt_content_file)) {
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | MISSING content data: ".var_export($gzt_content_file,true)." | Nid = $nid".PHP_EOL,3);
+				continue;
+			}
+			$pageCount++;
+			$gzt_groupby = $gzt_content_file['form'];
+			$form = $gzt_groupby;
+
+			$hsection = $hitem = '';
+
+			if (isset($head_items[$gzt_groupby]))
+				$hsection = $head_sections[$gzt_groupby];
+
+			if (empty($hsection)) {
+				//$tgzt_groupby = strtoupper($gzt_content_file['form']);
+				$tgzt_groupby = strtoupper($gzt_groupby);
+				$hsection = $gzt_info['gzt_title'][$tgzt_groupby]['E'];
+				if (empty($hsection)) {
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | FAILED to RELOAD HEAD SECTION data | Form = $tgzt_groupby | from gzt_title = ".print_r($gzt_info['gzt_title'],true).PHP_EOL,3);
+					continue;
+				} else {
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | RELOADING HEAD SECTION data: $gzt_groupby | from gzt_title = $hsection | Nid = $nid".PHP_EOL,3);
+				}
+			}
+
+			if (isset($head_items[$gzt_groupby]))
+				$hitem = $head_items[$gzt_groupby];
+
+			if (empty($hitem)) {
+				$tgzt_groupby = strtoupper($gzt_groupby);
+				$hitem = $gzt_info['gzt_title'][$tgzt_groupby]['A'];
+				if (empty($hitem)) {
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | FAILED to RELOAD HEAD ITEM data | Form = $tgzt_groupby | from gzt_title = ".print_r($gzt_info['gzt_title'],true).PHP_EOL,3);
+					continue;
+				} else
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | RELOADING HEAD ITEM data: $gzt_groupby |from gzt_title = $hitem | Nid = $nid".PHP_EOL,3);
+			}
+
+			$gzt_file = $gzt_content_file['filepath'];
+			$html_file = $gzt_content_file['html_filepath'];
+			$css_file =  $gzt_content_file['cssfilepath'];
+			$seq =  $gzt_content_file['seq'];
+			$bgzt_file = basename($gzt_file);
+			//$tp = $gzt_content_file['pages'];
+			$gzt_toc_id = $gzt_content_file['toc'];
+			$toc_id = strtoupper($gzt_groupby).'_'.$gzt_toc_id;
+			$htoc_id = strtoupper($gzt_groupby).'_htoc';
+			$dedup = $toc_id; //$gzt_groupby.'-'.$bgzt_file;
+
+			//DeDup based on gzt_file (compiled notices per province or dept)
+			if (isset($seen[$dedup])) {
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | SKIP ALREADY ADDED | SAME Page Numbers = ".$seen[$dedup]." | TOC = $gzt_toc | Form = $gzt_groupby | file: $bgzt_file".PHP_EOL,3);
+				continue;
+			}
+			$seen[$dedup] = $toc_pages;
+		 	$gzt_toc_line = $ini['orderby'][$gzt_toc];
+
+			if (!isset($gzt_info['toc_items'][$hsection]))
+				$gzt_info['toc_items'][$hsection] = array($hitem => array());
+
+			if (!isset($gzt_info['toc_items'][$hsection][$hitem]) || !is_array($gzt_info['toc_items'][$hsection][$hitem])) {
+				$gzt_info['toc_items'][$hsection][$hitem] = array();
+			}
+			if (!isset($gzt_info['toc_items'][$hsection][$hitem][$dedup]) || !is_array($gzt_info['toc_items'][$hsection][$hitem][$dedup])) {
+				$gzt_info['toc_items'][$hsection][$hitem][$dedup] = array (
+					'@notice_number@'=>$gzt_info['notice_number'],
+					'@toc_line@'=>$gzt_toc_line,
+					'@toc_section@'=>$seq['section'],
+					'@padding_dots@'=>'......',
+					'@gzt@'=>$gzt_info['gzt_number'],
+					'@toc_page@'=>$toc_pages,
+					'@offset_page@'=>$page_offset,
+					//'@head_toc_page@'=>$toc_pages,
+				);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| ADD toc_id = $toc_id | toc_page =$toc_pages | pageCount = $pageCount | File=$gf | groupby = $gzt_groupby | TOC = $gzt_toc | head_toc_page# = $head_pdfPage | Nid = $nid".PHP_EOL,3);
+				if ($pdf['engine'] == 'weasyprint') {
+					file_put_contents($gzt_toc_file,'<div class="tocnone"><a href="#'.$toc_id.'">'.$toc_id.'</a>=<a href="#'.$toc_id.'" class="tocpagenr"></a></div>'.PHP_EOL, FILE_APPEND);
+				}
+			}
+			if ($head_pdfPage == 0) {
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| ADD TOC HEADER Page = $toc_pages | pageCount = $pageCount | File=$gf | groupby = $gzt_groupby | TOC = $gzt_toc | head_toc_page# = $head_pdfPage | Nid = $nid".PHP_EOL,3);
+				$head_pdfPage = $toc_pages;
+				file_put_contents($gzt_toc_file,'<div class="tochead"><a href="#'.$htoc_id.'">'.$htoc_id.'</a>=<a href="#'.$htoc_id.'" class="tocpagenr"></a></div>'.PHP_EOL, FILE_APPEND);
+				$gzt_info['toc_items'][$hsection][$hitem][$dedup]['@head_toc_page@'] = $head_pdfPage;
+			}
+		 	else {
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| ADD TOC Page = $toc_pages | File=$gf | groupby = $gzt_groupby | TOC Page# = $gzt_toc | head_toc_page# = $head_pdfPage | GZT NOTICE Count = $pageCount | Nid = $nid".PHP_EOL,3);
+				//$toc_pages = $ntoc_pages;
+			}
+
+			//Load Static Page Numbers if exist in orderby.ini
+			$ini_toc_pages = 0;
+			if (isset($ini) && isset($ini[$gzt_groupby])) {
+				$pnum = str_replace(array('notice_','_group.pdf'),'',$bgzt_file);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | Load Page Numbers from INI File | Group By = $pnum".PHP_EOL,3);
+				if (isset($ini[$gzt_groupby][$pnum]) && $ini[$gzt_groupby][$pnum] != 'xx') {
+					$ini_toc_pages = $ini[$gzt_groupby][$pnum];
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | Page# = $ini_toc_pages | USE from INI File".PHP_EOL,3);
+				} else
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | NO INI Page# | Autogenerating Page numbers".PHP_EOL,3);
+			}
+
+			if ($ini_toc_pages == 0 && !empty($gzt_html_file) && isset($gzt_generated_file['pdf'])) {
+				$tp = $gzt_generated_file['pages'];
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | AutoGenerating Page Number = $tp | Gazette = $bgzt_html_file | Form = $gzt_groupby".PHP_EOL,3);
+				$gzt_cfile = $gzt_generated_file['pdf'];
+				/*
+				$pg_dimensions = get_page_dimensions($nid, $gzt_cfile);
+				if (is_array($pg_dimensions)) {
+					if ($pg_dimensions['success']) {
+						//Testing Revealed 82% as maximum full page A4 with space for header and footer
+						//Anything below 81% percentage will add next data to the flow
+						//TODO: Add Business rules for page-breaks if required
+						if (isset($pg_dimensions['score']) && $pg_dimensions['score'] < 81) {
+							$tp = $tp - 1;
+							$msg = __FUNCTION__."| Reduce by 1 Page | cPages = $tp | score: 81 > ".$pg_dimensions['score'];
+							file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+						} else {
+							$msg = __FUNCTION__."| Use existing Page# | cPages = $tp | ".print_r($pg_dimensions,true);
+							file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+							//return array('success'=>false,'message'=>"GZT Content Compiler FAILED: Missing Page Dimension | gzt = $nid");
+						}
+					} else {
+						$msg = __FUNCTION__."| WARNING | FAILED to get Page Dimensions | TOC entry = $gzt_toc | ERROR: ".$pg_dimensions['message'];
+						file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+						return $pg_dimensions;
+					}
+				} else {
+					$msg = __FUNCTION__."| WARNING | FAILED to get Page Dimensions | TOC entry = $gzt_toc | ERROR: ".var_export($pg_dimensions);
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+					return array('success'=>false,'message'=>$msg);
+				}
+*/
+			}
+
+			if ($ini_toc_pages == 0) {
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | PAGINATED | Generated Page# $toc_pages | for Generation Stage".PHP_EOL,3);
+				$toc_pages = $page_offset;
+			} else {
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | REPAGINATED INI Page# = $ini_toc_pages | Generated Page# $toc_pages | for Generation Stage".PHP_EOL,3);
+				$toc_pages = $ini_toc_pages;
+			}
+
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | groupby = $gzt_groupby | Adding TOC = $gzt_toc  | head_pdfPage = $head_pdfPage | GZT Current Page = $pageCount | Nid = $nid".PHP_EOL,3);
+			//$gzt_toc_line = $gzt_toc;
+			//$pdfPage = $totalTOCPages+1;
+			//$pages_tjekae = $seen[$dedup];
+
+			$totalTOCPages = $toc_pages;
+			if ($totalTOCPages > $divisor) {
+				$parts = ceil($totalTOCPages/$divisor);
+			} else {
+				$parts = 1;
+			}
+
+			$gzt_info['parts'] = $parts;
+
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| File=$gf | Prep TOC | Found PARTS = $parts | Nid = $nid".PHP_EOL,1);
+
+			$gzt_info['toc_items'][$hsection][$hitem][$dedup]['@toc_page@'] = $toc_pages;
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Form Content | head_item = $hitem | Page Id = $dedup | number $toc_pages | h Nid = $nid".PHP_EOL,1);
+		}//generate the TOC items
+		if (empty($gzt_html_file)) {
+			$gzt_provdir = dirname($html_file);
+			$gzt_basedir = dirname($gzt_provdir);
+			
+			$gzt_html_file = $gzt_basedir."/gazette_content_$nid.html";
+			$bgzt_html_file = basename($gzt_html_file);
+			$gzt_final_output = $gzt_basedir."/gazette_output_$nid.html";
+			$gzt_css_file = $gzt_basedir."/publication_style.css";
+			$gzt_font_file = $gzt_basedir."/HelveticaLTStd-Roman.otf";
+			$gzt_pdf_file = $gzt_basedir."/gazette_$nid.pdf";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| NEW Gazette PROMISE | pdf = $gzt_pdf_file  | html = $gzt_html_file  | css = $gzt_css_file | gzt id = $nid",3);
+
+			$svg_source = $gzt_provdir."/separator.svg";
+			$svg_separator = $gzt_basedir."/separator.svg";
+			if (!file_exists($svg_separator)) {
+				if (file_exists($svg_source)) {
+					copy($svg_source,$svg_separator);
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| CACHED SVG Separator+1 | pdf = $gzt_pdf_file  | html = $gzt_html_file  | css = $gzt_css_file | gzt id = $nid",3);
+				}
+			 	else {
+					$svg_source = "layouts/gazettes/legala/separator.svg";
+					copy($svg_source,$svg_separator);
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| CACHED SVG Separator+2 | pdf = $gzt_pdf_file  | html = $gzt_html_file  | css = $gzt_css_file | gzt id = $nid",3);
+				}
+			}
+			//file_put_contents($gzt_html_file,'<html><head> <style> @page{size:210mm 286.5mm;} </style> <link rel="stylesheet" href="publication_style.css"></head><body class="gazette-document" >'.PHP_EOL);
+
+			if ($pdf['engine'] == 'internal') {
+				$toc_here = '<tocpagebreak />';
+			}
+			$noticetype_rule = '';
+			$noticetype_line = 'noticetype_line_separator';
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Trying TPL for Notice Type RULE = $noticetype_line | gzt id = $nid",3);
+			if (1==0 && $separator_ini = get_separators($nid,$form,$gzt_info['tplfolder'],$noticetype_line)) {
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| GOT Notice Type RULE | gzt id = $nid | ".print_r($separator_ini,true),3);
+				$noticetype_rule_tpl = $separator_ini['template_file'];
+				if (file_exists($noticetype_rule_tpl)) {
+					$noticetype_rule = file_get_contents($noticetype_rule_tpl);
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Using TPL for Notice Type RULE | html = $noticetype_rule_tpl | css = noticetype_rule | gzt id = $nid",3);
+				} else if (isset($separator_ini['template'])) {
+					$noticetype_rule = $separator_ini['template'];
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Using fallback for Notice Type RULE = [$noticetype_rule] | html = $noticetype_rule | CSS = noticetype_line_separator | gzt id = $nid",3);
+				} else {
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| SKIP $noticetype_line RULE | gzt id = $nid",3);
+				}
+			} else {
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| MISSING/Disabled $noticetype_line RULE | gzt id = $nid",4);
+			}
+			$css_file = 'layouts/gazettes/legala/publication_style.css';
+
+			if (!file_exists($css_file)) {
+				$msg = __FUNCTION__."| FAILED to Load Missing Main CSS = $css_file | Cannot generate Gazette";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+				tracker_builder($nid,$tm_start,'failed:PDF Notice Content Generation Failed');
+				return array('success'=>false,'message'=>$msg);
+			}
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Using Default Main CSS = $css_file | gzt id = $nid",3);
+			file_put_contents($gzt_css_file, file_get_contents($css_file).PHP_EOL, FILE_APPEND);
+			$font_file = 'libraries/fonts/helvetica/HelveticaLTStd-Roman.otf';
+			if (!file_exists($font_file)) {
+				$msg = __FUNCTION__."| FAILED to Load Missing Main Font = $font_file | Cannot generate Gazette";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+				tracker_builder($nid,$tm_start,'failed:PDF Notice Content Generation Failed due to missing font');
+				return array('success'=>false,'message'=>$msg);
+			}
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Using Default Font Family = $font_file | gzt id = $nid",3);
+			copy($font_file,$gzt_font_file); //, file_get_contents($font_file).PHP_EOL, FILE_APPEND);
+		}
+		if ($pdf['engine'] == 'weasyprint') {
+			file_put_contents($gzt_toc_file,'</div>'.PHP_EOL,FILE_APPEND);
+		}
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Adding TOC Entries = $toc_here = ".$seq['section'],3);
+		//SAVE by Appending to final gzt file = $gzt_html_file
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Checking TOC Section = ".$seq['section'],3);
+		if (stripos($form,'form') !== false || stripos($form,'J28') !== false || strtoupper($form) == 'J29' || stripos($form,'J29CC') !== false) {
+			$skip_provincial_rule = true;
+		}
+
+		file_put_contents($gzt_html_file, file_get_contents($html_file).$noticetype_rule.PHP_EOL, FILE_APPEND);
+
+		//$pages_tjekae = $gzt_files[$sectionid][$forms_tjekae-1]['pages'];
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| COMPLETED NoticeType_$fid | Form = $sectionid | Notices count = $forms_tjekae",3);
+	} //generate the GZT Pages
+	//$pages_tjekae -= 1;
+	$gzt_info['page_numbers'] = $seen;
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Page Numbers = ".print_r($seen,true),3);
+	if (!empty($gzt_html_file) && !empty($gzt_css_file)) {
+		file_put_contents($gzt_toc_file,'<div>-----[end-toc]----</div></section>'.PHP_EOL,FILE_APPEND);
+		$toc_here = file_get_contents($gzt_toc_file);
+		file_put_contents($gzt_final_output, '<!DOCTYPE html><html><head><link rel="stylesheet" href="publication_style.css"> <style> @page{size:210mm 286.5mm;} </style> </head><body class="gazette-document">'.PHP_EOL.$toc_here.PHP_EOL.file_get_contents($gzt_html_file).PHP_EOL.'</body></html>');
+		$gzt_generated_file = generate_gzt_pdf($pdf, $nid, $gzt_final_output, $gzt_css_file, $gzt_pdf_file);
+		$toc_here = '';
+
+		if (!is_array($gzt_generated_file)) {
+			$msg = __FUNCTION__."| INVALID Return from generate_gzt_pdf(nid=$nid, gzt_html_file=$gzt_html_file, gzt_css_file=$gzt_css_file, gzt_pdf_file=$gzt_pdf_file) | FAILED to generate Content | nid = $nid | ERROR: ".var_export($gzt_generated_file,true);
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+			tracker_builder($nid,$tm_start,'failed:PDF Notice Content Generation Failed');
+			return array('success'=>false,'message'=>$msg);
+		}
+		if (!$gzt_generated_file['success']) {
+			$msg = __FUNCTION__."| FAILED to generate Content | ERROR: Message = ".$gzt_generated_file['message'];
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+			tracker_builder($nid,$tm_start,'failed:PDF Notice Content Generation Failed');
+			return array('success'=>false,'message'=>$msg);
+		}
+
+		$pages_tjekae = $gzt_generated_file['pages'];
+
+		$te = microtime(true);
+		$d = $te-$ts;
+		$gzt_stats = array(
+			'duration'=>$d,
+			'html'=>stat($gzt_final_output)['size'],
+			'css'=>stat($gzt_css_file)['size'],
+			'pages'=>$pages_tjekae
+		);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Generated FINAL Gazette Content = ".print_r($gzt_stats,true),3);
+		tracker_builder($nid,$tm_start,'Generated Notice Content PDF');
+		$tm_start = microtime(true);
+		$skip_toc_pages = count_toc_pages($nid, $gzt_generated_file['pdf']);
+		if (!is_array($skip_toc_pages) || !$skip_toc_pages['success']) {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| WARNING | FAILED to Detect Internal TOC Pages | nid = $nid | gzt_generated_file = ".json_encode($gzt_generated_file,true),3);
+			tracker_builder($nid,$tm_start,'failed:PDF TOC Generation Failed');
+			return array('success'=>false,'message'=>__FUNCTION__.'| ERROR: TOC Pages were not detected'.PHP_EOL.$skip_toc_pages['message']);
+		} else
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| TOC Extracted OK | Detected Internal TOC Pages | nid = $nid | gzt_generated_file = ".json_encode($gzt_generated_file,true),3);
+		$gzt_generated_file['skip_toc_pages'] = $skip_toc_pages;
+		$prepPageCount = $skip_toc_pages['toc_pages'];
+		$skip_toc_pages['books'] = floor($pages_tjekae/128);
+		$repaging = gzt_pagination($nid, $gzt_info, $page_offset+$prepPageCount, $skip_toc_pages);
+		if (!is_array($repaging) || !$repaging['success']) {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| WARNING | FAILED to Repaginate from Internal TOC Pages | nid = $nid ",3);
+			tracker_builder($nid,$tm_start,'failed:PDF TOC Generation Failed');
+		} else {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| TOC Repaginated from Internal TOC Pages | nid = $nid ",3);
+			$gzt_generated_file['toc_content_file'] = $repaging['toc_content_file'];
+			tracker_builder($nid,$tm_start,'Generated TOC Content PDF');
+		}
+		$gzt_generated_file['frontpages'] = $repaging['frontpages'];
+		$gzt_generated_file['multiple_toc'] = $multiple_toc;
+		return $gzt_generated_file;
+	}
+
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FATAL Error: Cannot Generate FINAL Gazette Content from = $gzt_html_file",1);
+	return array('success'=>false,'message'=>__FUNCTION__."| FATAL Error: FAILED generate Gazette | Gazette Id = $nid");
+}
+/*
+ * Function to reupdate the Gazette TOC Page Numbers
+ * @param $nid Submission Number
+ * @param $gzt_info is an array of table of contents and other properties of the gazette
+ * @param $new_offset an integer indicating last page before advert content starts
+ * @param $skip_toc_pages is an array from count_toc_pages with toc_pages extracted to text files
+ * @return array success and message
+*/
+function gzt_pagination($nid,&$gzt_info,$new_offset, $skip_toc_pages) {
+	if (!is_array($gzt_info)) {
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FATAL Error: Cannot Repaginate | Missing toc_items in gzt_info structure: ".var_export($gzt_info,true),1);
+		return array('success'=>false,'message'=>__FUNCTION__."| FATAL Error: Invalid Format: gzt_info | Gazette Id = $nid");
+	}
+	if (!isset($gzt_info['toc_items'])) {
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FATAL Error: Cannot Repaginate | Missing toc_items in gzt_info structure: ".print_r($gzt_info,true),1);
+		return array('success'=>false,'message'=>__FUNCTION__."| FATAL Error: Invalid Structure: gzt_info | Gazette Id = $nid");
+	}
+	$cache_path = $gzt_info['cache_path'];
+	$toc_content_file = $cache_path.'/toc/content.html';
+	$toc_css_file = $cache_path.'/toc/style.css';
+	$gztTPLDIR = 'layouts/gazettes/legala';
+
+	if (!is_dir($cache_path.'/toc')) { 
+		wecho (__FUNCTION__."| WARNING: Adding New TOC TPL Cache Folder = $cache_path/toc");
+		if (!rcopy("$gztTPLDIR/toc","$cache_path/toc")) {
+			$msg = __FUNCTION__."| PERMISSION DENIED | Cannot Create cache folder $cache_path/toc";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg.PHP_EOL.'---EXIT---',1);
+			return array('success'=>false,'message'=>__FUNCTION__.'| Storage Error: '.$msg);
+		}
+		$tpl_file = $cache_path.'/toc/toc.tpl';
+		if (!file_exists($tpl_file)) { 
+			$msg = __FUNCTION__."| MISSING TOC TPL | Cannot Find $tpl_file in cache folder $cache_path/toc";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg.PHP_EOL.'---EXIT---',1);
+			return array('success'=>false,'message'=>__FUNCTION__.'| Storage Error: '.$msg);
+		}
+		if (!file_exists($toc_content_file)) { 
+			//@rename($tpl_file,$toc_content_file);
+			$msg = __FUNCTION__."| NEW TOC TPL to $toc_content_file in cache folder $cache_path/toc";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg.PHP_EOL.'---EXIT---',1);
+		}
+		if (!file_exists($toc_css_file)) { 
+			$msg = __FUNCTION__."| Create Main CSS to $toc_css_file in cache folder $cache_path/toc";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg.PHP_EOL.'---EXIT---',1);
+			$css_tpl_file = $cache_path.'/toc/style.tpl';
+			if (!file_exists($css_tpl_file)) { 
+				//@rename($tpl_file,$toc_content_file);
+				$msg = __FUNCTION__."| MISSING TPL source $css_tpl_file in cache folder $cache_path/toc";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg.PHP_EOL.'---EXIT---',1);
+			} else
+				file_put_contents($toc_css_file,file_get_contents($css_tpl_file).PHP_EOL,FILE_APPEND);
+			if (1 == 0) {
+				$css_files = glob($cache_path.'/toc/*.css');
+				foreach($css_files as $css_file) {
+					file_put_contents($toc_css_file,file_get_contents($css_file).PHP_EOL,FILE_APPEND);
+				}
+			}
+		}
+	}
+
+	if (!is_array($skip_toc_pages)) {
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FATAL Error: Cannot Repaginate | Missing dynamic_toc_pages in gzt_info structure: ".print_r($gzt_info,true),1);
+		return array('success'=>false,'message'=>__FUNCTION__."| FATAL Error: Invalid Structure: gzt_info | Gazette Id = $nid");
+	}
+
+	$head_section_tpl_file = $cache_path.'/toc/head_sections.tpl';
+	if (!file_exists($head_section_tpl_file)) { 
+		$errormsg = __FUNCTION__."| FATAL ERROR: Failed to Load TOC:Head Section TPL = [$head_section_tpl_file]: ".$p->getMessage();
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+		return array('success'=>false,'message'=>$errormsg);
+	}
+
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| new offset = $new_offset | Detected toc = ".print_r($skip_toc_pages,true),3);
+	$page_numbers = "[page_numbers]";
+	$inifile = '';
+	$toc_pages = $skip_toc_pages['toc_pages'];
+	foreach ($skip_toc_pages['toc_files'] as $toc_file) {
+		$entries = shell_exec("grep '_' $toc_file | grep -v '=$'");
+		if (!empty($page_numbers)) {
+			$gzt_path = dirname($toc_file);
+			$inifile = $gzt_path.'/page_numbers.ini';
+			file_put_contents($inifile,$page_numbers.PHP_EOL,FILE_APPEND);
+			$page_numbers = '';
+		}
+		file_put_contents($inifile,$entries,FILE_APPEND);
+	}
+
+	$books_allowed = true; //Allow multiple books by default
+	$multiple_books = 0; //Account for FrontPage and LastPage of every book;
+	$books = array (0 => $skip_toc_pages['books']);
+	$override_inifile = $gztTPLDIR.'/override_pagenumbers.ini';
+	if (file_exists($override_inifile)) {
+		$inifile=$override_inifile;
+		$new_offset = 1;
+		$books = null;
+		$msg = __FUNCTION__."| WARNING | MANUAL PAGE NUMBERS Detected $inifile";
+		$books_allowed = false;
+	} else 
+		$msg = __FUNCTION__."| AUTOMATED PAGE NUMBERS Detected $inifile";
+
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+
+	if ($books_allowed)
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | books array = ".count($books)." | Multiple Books = ENABLED",3);
+	else
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | books array = FALSE | MANUAL Pages = LIKELY",3);
+
+	try {
+		if (empty($inifile) || !file_exists($inifile)) {
+			$errormsg = __FUNCTION__."| WARNING | TOC Groupby Config missing:  $inifile";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+			return array('success'=>false,'message'=>$errormsg);
+		} else {
+			$msg = __FUNCTION__."| USE TOC Page Numbers in:  $inifile";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+			$ini = parse_ini_file ($inifile, true);
+			if (count($ini) == 0) {
+				$errormsg = __FUNCTION__."| WARNING: EMPTY TOC Page Number Configuration file: $inifile";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+				return array('success'=>false,'message'=>$errormsg);
+			}
+		}
+		if (!isset($ini) || !isset($ini['page_numbers'])) {
+			$errormsg = __FUNCTION__."| FATAL ERROR: MISSING TOC page_numbers in config file [$inifile]";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+			return array('success'=>false,'message'=>$errormsg);
+		}
+	} catch (Exception $p) {
+		$errormsg = __FUNCTION__."| FATAL ERROR: Failed to Load TOC Groupby config file [$inifile]: ".$p->getMessage();
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+		return array('success'=>false,'message'=>$errormsg);
+	}
+	$PageSections = count($ini['page_numbers']);
+	$tjekae = count($gzt_info['toc_items']);
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| NEW Offset = $new_offset | toc_items = $tjekae | PGN INI PageSections = $PageSections",3);
+	$static_head_section = '';
+	$frontpages = 0;
+
+	//Repaginate PDF pages as per new_offset
+	$gf = $hPage = $cPage = 0;
+	foreach ($gzt_info['toc_items'] as $hsection=>$hitems) {
+		$dsections = new ArrayObject($hitems);
+		$xit = $dsections->getIterator();
+		$xsection = $xit->key();
+		$xfsection = $hitems[$xsection];//[$xdedup]['@toc_section@'];
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | LOADING | XSECTION = $xsection",1);
+
+		$pitems = new ArrayObject($hitems[$xsection]);
+		$pit = $pitems->getIterator();
+		$pitem = $pit->key();
+		$psection = strtolower($hitems[$xsection][$pitem]['@toc_section@']);
+
+		if ($psection == 'section1') {
+			$head_toc_item = '<span class="big">'.implode('</span>&nbsp;&nbsp;<span class="big">',explode(' ',$hsection)).'</span>';
+		} else {
+			$head_toc_item = $hsection; //'<span>'.implode('</span>&nbsp;&nbsp;<span>',explode(' ',$hsection)).'</span>';
+		}
+
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | LOADING hsection | PITEM = $pitem | head_item = $head_toc_item",1);
+		file_put_contents($toc_content_file,
+			str_replace(
+				array('@head_section@','@section@'),
+				array($head_toc_item,$psection),
+				file_get_contents($head_section_tpl_file)).PHP_EOL,
+		FILE_APPEND);
+		foreach ($hitems as $hitem=>$dedups) {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | LOADING | HITEM = $hitem",1);
+			$ditems = new ArrayObject($dedups);
+			$it = $ditems->getIterator();
+			$xitem = $it->key();
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | LOADING | XITEM = $xitem",1);
+
+			$fsection = $dedups[$xitem]['@toc_section@'];
+			$fsection_id = str_ireplace('SECTION','',$fsection);
+
+			$head_item_tpl_file = $cache_path.'/toc/head_items-'.$fsection_id.'.tpl';
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | LOADING | toc_section = $fsection | tpl = $head_item_tpl_file",1);
+			if (!file_exists($head_item_tpl_file)) { 
+				$errormsg = __FUNCTION__."| FATAL ERROR: Failed to Load TOC:Head Item TPL = [$head_item_tpl_file]: ".$p->getMessage();
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+				return array('success'=>false,'message'=>$errormsg);
+			}
+
+			if ($fsection_id == 1) {
+				file_put_contents($toc_content_file,str_replace(array('@head_item@','@section@'),array($hitem,$fsection),file_get_contents($head_item_tpl_file)).PHP_EOL,FILE_APPEND);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | L1: Section = $fsection | hitem = $hitem",1);
+			} else {
+				$old_page = $gzt_info['toc_items'][$hsection][$hitem][$xitem]['@toc_page@'];
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | LX: Section = $fsection | old_page = $old_page",1);
+				if (!isset($ini['page_numbers'][$xitem])) {
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | WARNING | New Page Number MISSING | Item = $xitem",1);
+					continue;
+				}
+				$form = explode('_',$xitem)[0];
+				$xhtoc = strtoupper($form).'_htoc';
+
+				if (isset($ini['page_numbers'][$xhtoc])) {
+					$hpni = $ini['page_numbers'][$xhtoc];
+					$ftoc_page = $new_offset+$hpni-$toc_pages;
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | PGN INI | Level = $fsection | Old Page = $old_page | toc_pages (T) = $toc_pages | new_offset(N) = $new_offset | Head Page(H) = $hpni | New Page (N+H-T) = $ftoc_page",1);
+				} else {
+					$pni = $ini['page_numbers'][$xitem];
+					$ftoc_page = $new_offset+$pni-$toc_pages;
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | Default | Level = $fsection | Old Page = $old_page | toc_pages (T) = $toc_pages | new_offset(N) = $new_offset | Content Page(C) = $pni | New Page (N+C-T) = $ftoc_page",1);
+				}
+				$ftoc_page += $multiple_books; //Ensure multiple books are added to total
+				file_put_contents($toc_content_file,
+					str_replace(
+						array('@head_item@','@section@','@head_toc_page@'),
+						array($hitem,strtolower($form.' '.$fsection),$ftoc_page),
+						file_get_contents($head_item_tpl_file)
+					).PHP_EOL,
+				FILE_APPEND);
+			}
+			unset($ditems);
+			foreach ($dedups as $item=>$dedup) {
+				$gf++;
+				//file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | hsection = $hsection | Item = $item",1);
+				$old_offset = $dedup['@offset_page@'];
+				if (!isset($ini['page_numbers'][$item])) {
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | New Page Number missing | Item = $item",1);
+					continue;
+				}
+				$pni = $ini['page_numbers'][$item];
+				if (!$books_allowed && isset($dedup['@toc_page@'])) {
+					$cPage = $dedup['@toc_page@'];
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | WARNING | Manual Page Number | cPage = $cPage",1);
+				} else {
+					$cPage = $multiple_books+$new_offset+$pni-$toc_pages;
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | DYNAMIC Page Number | cPage = $cPage",1);
+				}
+				//$delta_offset = ($new_offset-$old_offset);
+				//$new_delta_page = $cPage+$delta_offset;
+				//file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | New Delta Page = $new_delta_page | new delta offset = $delta_offset | Item = $item",1);
+
+				$toc = $dedup['@toc_line@'];
+				$frontpages = floor($cPage/128);
+
+				$frontpages_multiple = ($frontpages > 0);
+				if ($frontpages_multiple)
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | frontpages:$frontpages > 0 | Multiple Books = TRUE",3);
+				else
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | frontpages:$frontpages == 0 | Multiple Books = FALSE",3);
+
+				$new_book = !isset($books[$frontpages]);
+				if ($new_book)
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | NEW Book PROMISED = $new_book | Multiple Books = TRUE",3);
+				else
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | ADD to Current Book = $frontpages",3);
+
+				if ($books_allowed && $frontpages_multiple && $new_book) {
+					$multiple_books = $multiple_books+2; //increase by frontpage + lastpage
+					$cPage += $multiple_books;
+					$books[$frontpages] = $cPage;
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | toc_page: frontpages = $frontpages | Multiple Books factor = $multiple_books | Old Page Number = $cPage",3);
+				} else
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | Manual Page Numbers? | FrontPages is Zero = $frontpages | Multiple Books factor = $multiple_books | Old Page Number = $cPage",3);
+
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | cPage = $cPage | (multiple_books:$multiple_books + new_offset:$new_offset + pni:$pni - toc_pages:$toc_pages)",3);
+				$gzt_info['toc_items'][$hsection][$hitem][$item]['@toc_page@'] = $cPage; //$new_toc_page;
+				$gzt_info['toc_items'][$hsection][$hitem][$item]['@offset_page@'] = $multiple_books+$new_offset;
+				$section = $dedup['@toc_section@'];
+				$form = explode('_',$item)[0];
+				if (isset($dedup['@head_toc_page@'])) {
+					$xhtoc = strtoupper($form).'_htoc';
+					if (isset($ini['page_numbers'][$xhtoc])) {
+						$hpni = $ini['page_numbers'][$xhtoc];
+						$new_head_toc_page = $multiple_books+$new_offset+$hpni-$toc_pages;
+						file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | INI HEAD Page Number = $hpni | head toc id = $xhtoc",1);
+					} else {
+						//$new_head_toc_page = $new_toc_page;
+						file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf  | Assuming HEAD Pg = FIRST Province pg = $new_head_toc_page | MISSING head toc id = $xhtoc",1);
+					}
+					$gzt_info['toc_items'][$hsection][$hitem][$item]['@head_toc_page@'] = $new_head_toc_page;
+					$gzt_info['toc_items'][$hsection][$hitem][$item]['@toc_page@'] = $new_head_toc_page;
+					$hPage = $new_head_toc_page;
+					$css_file = $cache_path.'/toc/'.strtolower($form).'_toc.css';
+					if (file_exists($css_file)) {
+						file_put_contents($toc_css_file,file_get_contents($css_file).PHP_EOL,FILE_APPEND);
+						file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Add CSS FILE = $css_file | $gf TOC = $toc | Item = $item",1);
+					} else {
+						file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| SKIP Missing CSS FILE = $css_file | $gf TOC = $toc | Item = $item | toc_file = $toc_content_file",1);
+					}
+				}
+				$section_id = str_ireplace('SECTION','',$section);
+				$toc_item_tpl_file = $cache_path.'/toc/toc_items-'.$section_id.'.tpl';
+				if (!file_exists($toc_item_tpl_file)) { 
+					$errormsg = __FUNCTION__."| FATAL ERROR: Failed to Load TOC:Head Item TPL = [$toc_item_tpl_file]: ".$p->getMessage();
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+					return array('success'=>false,'message'=>$errormsg);
+				}
+				$msg = __FUNCTION__."| $gf Loading TOC ITEM = $toc | section = $section | toc tpl = $toc_item_tpl_file";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,3);
+				file_put_contents($toc_content_file,str_replace(
+					array('@toc_item@','@section@','@toc_page@'), 
+					array($toc,strtolower($form.' '.$section),$cPage),
+					file_get_contents($toc_item_tpl_file)).PHP_EOL,
+				FILE_APPEND);
+
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| $gf TOC = $toc | hsection = $hsection | hitem = $hitem | Header Page Number: Old  = $hPage vs New = $new_head_toc_page | Content Page Number = $cPage | Content Page Numbers = $pni | Item = $item",1);
+			}
+		}
+	}
+
+	if ($gf > 0) {
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Updated Pages = $gf | toc File = $toc_content_file | offset = $new_offset | items = ".print_r($gzt_info['toc_items'],true),1);
+		return array('success'=>true,'frontpages'=>$frontpages,'toc_content_file'=>$toc_content_file,'message'=>"PASS: Repaginated $gf Pages | new offset = $new_offset");
+	}
+
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Page Numbers not Updated | offset = $new_offset",1);
+	return array('success'=>false,'message'=>"FAIL: Cannot Repage | new offset = $new_offset");
+}
+/*
+ * Function to get dimensions of last of Gazette Content PDF
+ * @param $nid <int> Submission Number
+ * @param $pdf_file <string> path for the final output pdf for the gazette
+*/
+function count_toc_pages($nid, $pdf_file,$end_marker = '-----[end-toc]----') {
+	if (!file_exists($pdf_file)) {
+		file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| FAILED: Missing Input File | PDF = $pdf_file\n",2);
+		return array('success'=>false,'message'=>__FUNCTION__."| MISSING GZT File | PDF = $pdf_file");
+	}
+	$mimetype1 = strtolower(mime_content_type($pdf_file));
+	if (strpos($mimetype1,'pdf') === false) {
+		file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Invalid MimeType = $mimetype1 | PDF = $pdf_file\n",2);
+		return array('success'=>false,'message'=>__FUNCTION__."| ONLY PDF can be processed | Invalid MimeType = $mimetype1 | PDF = $pdf_file");
+	}
+	
+	$text_file = '';
+	$text_files = array();
+	$fpg = 0;
+	try {
+		file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Load TOC from File | PDF = $pdf_file\n",2);
+		$get_pdf_info = @exec("pdfinfo $pdf_file | grep Pages");
+		list ($p, $last_pg) = explode(':',$get_pdf_info);
+
+		file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| PDF Pages = $last_pg | PDF = $pdf_file\n",2);
+
+		if ($last_pg > 0) {
+			file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Extract Image | PDF = $pdf_file\n",2);
+			$wdir = dirname($pdf_file);
+			for ($f = 1; $f < $last_pg; $f++) {
+				$fpg = $f; //trim($first_pg);
+				$text_file = "$wdir/gzt_toc_$f.txt";
+				$get_image = @exec("pdftotext -layout -f $f -l $f $pdf_file $text_file");
+
+				file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Extracted Page $f - TEXT File = $text_file | from PDF = $pdf_file\n",2);
+				if (file_exists($text_file)) {
+					file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Check if PDF Page = $fpg of TOC | TXT = $text_file\n",2);
+					$fsz = filesize($text_file);
+					$text_files[]=$text_file;
+					if (strpos(file_get_contents($text_file),$end_marker) !== false) {
+						file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Last TOC Page = $fpg | TXT = $text_file\n",2);
+						$get_tmp_tocpages_pdf = @exec("pdfseparate -f 1 -l $fpg $pdf_file $wdir/tocpage_%d.pdf && pdfunite $wdir/tocpage_*.pdf $wdir/tmp_tocpage.pdf");
+						if (isset($_REQUEST['debug_toc'])) {
+							file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| DEBUG=TOC\n",2);
+							return array('success'=>true,'toc_pages'=>$fpg,'toc_files'=>$text_files,'tmp_tocpage'=>"$wdir/tmp_tocpage.pdf");
+						} else {
+							file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| DEBUG= ".print_r($_GET,true),2);
+							return array('success'=>true,'toc_pages'=>$fpg,'toc_files'=>$text_files);
+						}
+					}
+					//@unlink($text_file);
+					file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| TOC Page = $fpg | Check Next Page | TXT = $text_file\n",2);
+				} else
+					file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| MISSING TOC Pages? = $fpg | PDF = $pdf_file\n",2);
+			}
+		} else
+			file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| MISSING PDF Pages | PDF = $pdf_file\n",2);
+
+	} catch (Exception $ex) {
+		file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| FAILED with General Exception on $pdf_file!\n".$ex->getMessage());
+	}
+	return array('success'=>false,'message'=>'FAILED to get TOC Pages: MISSING end-maker = '.$end_marker,'toc_pages'=>0);
+}
+/*
+ * Function to get dimensions of last of Gazette Content PDF
+ * @param $nid <int> Submission Number
+ * @param $pdf_file <string> path for the final output pdf for the gazette
+*/
+function get_page_dimensions($nid, $pdf_file) {
+	if (!file_exists($pdf_file)) {
+		file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| FAILED: Missing Input File | PDF = $pdf_file\n",2);
+		return array('success'=>false,'message'=>__FUNCTION__."| MISSING File | PDF = $pdf_file");
+	}
+	$mimetype1 = strtolower(mime_content_type($pdf_file));
+	if (strpos($mimetype1,'pdf') === false) {
+		file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Invalid MimeType = $mimetype1 | PDF = $pdf_file\n",2);
+		return array('success'=>false,'message'=>__FUNCTION__."| ONLY PDF can be processed | Invalid MimeType = $mimetype1 | PDF = $pdf_file");
+	}
+	$a4_default_height = 1754; //from test cycles equivalent of A4 optimal height
+	$a4_height = $gzt_height = 0;
+	$score = 0;
+	$pfile = '';
+	try {
+		file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Load File | PDF = $pdf_file\n",2);
+		$get_pdf_info = @exec("pdfinfo $pdf_file | grep Pages");
+		list ($p, $last_pg) = explode(':',$get_pdf_info);
+		$lpg = trim($last_pg);
+
+		file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| PDF Page = $lpg | PDF = $pdf_file\n",2);
+
+		if ($lpg > 0) {
+			file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Extract Image | PDF = $pdf_file\n",2);
+			$wdir = dirname($pdf_file);
+			$get_image = @exec("pdftocairo -png -f $lpg -l $lpg $pdf_file $wdir/gzt_page");
+
+			$gzt_page_crop = glob("$wdir/gzt_page*.png");
+			$fz = count($gzt_page_crop);
+			file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| $fz Extracted Image File(s) | PDF = $pdf_file\n",2);
+			if (is_array($gzt_page_crop)) {
+				$pfile = $gzt_page_crop[0];
+				file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| PDF Page = $lpg | PNG = $pfile\n",2);
+				$gzt_im = @imagecreatefrompng($pfile);
+				if (!is_resource($gzt_im)) {
+					file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Invalid Resource 1: cannot create image from PNG | PDF = $pdf_file\n",2);
+					return array('success'=>false,'message'=>__FUNCTION__."| ONLY Valid Resources can be processed | Cannot convert to PNG | PDF = $pdf_file");
+				}
+				$a4_height = imagesy($gzt_im);
+				//Ensure to remove white margins
+				$cropped = imagecropauto($gzt_im, IMG_CROP_WHITE);
+				imagedestroy($gzt_im);
+				if (!is_resource($cropped)) {
+					file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Invalid Resource 2: cannot autocrop PNG | PDF = $pdf_file\n",2);
+					return array('success'=>false,'message'=>__FUNCTION__."| ONLY Valid Resources can be processed | Cannot autocrop PNG | PDF = $pdf_file");
+				}
+				$gzt_height = imagesy($cropped);
+				imagedestroy($cropped);
+				@unlink($pfile);
+				file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| Default A4 Height = $a4_default_height | FOUND PDF Page = $a4_height | Height = $gzt_height | PNG = $pfile\n",2);
+			} else {
+				file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| MISSING PDF Page = $lpg | PDF = $pdf_file\n",2);
+			}
+		} else {
+			file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| MISSING PDF Pages | PDF = $pfile\n",2);
+		}
+
+		$score = floor(($gzt_height*100)/$a4_height); //Percentage page space used
+		file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| A4 Page H = $a4_height | Gzt Page H = $gzt_height | SCORE = $score\n",2);
+	} catch (Exception $ex) {
+		file_log_contents("logs/generateGZT_Ordinary_".$nid.".log", __FUNCTION__."| FAILED with General Exception!\n".$ex->getMessage());
+	}
+	return array('success'=>true,'input_height'=>$a4_height,'lastpage_height'=>$gzt_height, 'score'=>$score);
+}
+
+/*
+ * Function to generate a Gazette FrontPage
+ * @param $nid Submission Number
+ * @param $toc_info is an array of table of contents
+*/
+	function generate_gzt_page($nid, $gzt_info, $tpl){
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| START | Nid = $nid",1);
+
+		if (!isset($gzt_info['category']))
+			$gzt_info['category'] = 'extraordinary';
+
+		$gzt_info['category'] = $gzt_info['tplfolder'];
+		$pubdate = $gzt_info['pubdate'];
+		//$gzt_path = 'cache/gazettes/'.$pubdate.'/'.$gzt_info['category'];
+		$gzt_path = 'cache/gazettes/'.$pubdate.'/'.$gzt_info['category']."/$nid";
+		$gztTPLDIR = 'layouts/gazettes/'.$gzt_info['category'];
+		$issn = '1682-4555';
+		if (!isset($gzt_info['vol']))
+			$gzt_info['vol'] = 0; //random_int(100,999);
+
+		if (!isset($gzt_info['gzt']) && isset($gzt_info['gzt_number']))
+			$gzt_info['gzt'] = $gzt_info['gzt_number'];
+
+		if (!isset($gzt_info['parts'])) {
+			$gzt_info['parts'] = 1;
+		} else {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| parts = ".$gzt_info['parts'],3);
+		}
+		if (!isset($gzt_info['part'])) {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| No part",3);
+		}
+		
+		if (!isset($gzt_info['rnum']))
+			$gzt_info['rnum'] = 0;
+
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| gzt_info = ".print_r($gzt_info,true),4);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Calling get_page(gzt_info=, gzt_path=$gzt_path, gztTPLDIR=$gztTPLDIR, issn=$issn, tpl=$tpl) | Nid = $nid",1);
+		$pdf_file = get_page(
+			$gzt_info,
+			$gzt_path,
+			$gztTPLDIR,
+			$issn,
+			$tpl
+		);
+		if (!is_null($pdf_file)) {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Generated Page for GZT = ".$pdf_file." | Nid = $nid",1);
+			return $pdf_file;
+		}
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FAILED to Generate Page | Nid = $nid",1);
+		return null;
+	}
+/*
+ * Function to generate barcode config
+ * @param $nid Submission Number
+ * @param $section string poing to section in the config file
+*/
+function barcodes_config($nid,$section='all') {
+	$msg = __FUNCTION__."| START | nid = $nid | section =$section";
+	//addComment($nid,$msg);
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+	$ini = null;
+	try {
+		$inifile = 'layouts'.DIRECTORY_SEPARATOR.'gazettes'.DIRECTORY_SEPARATOR.'barcodes.ini';
+		if (!file_exists($inifile)) {
+			$errormsg = __FUNCTION__."| Config missing NO file";
+			//addComment($nid,$errormsg.' = '.basename($inifile));
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg.' = '.$inifile,1);
+			return;
+		}
+		$ini = parse_ini_file ($inifile, true);
+		if (count($ini) == 0) {
+			$errormsg = __FUNCTION__."| FATAL ERROR 006: EMPTY Configuration file: $inifile";
+			//addComment($nid,$errormsg);
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+			return;
+		}
+	} catch (Exception $p) {
+		$errormsg = __FUNCTION__."| FATAL ERROR 007: Failed to Load config file {$inifile}: ".$p->getMessage();
+		//addComment($nid,$errormsg);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+		return;
+	}
+
+	if (strtolower($section) == 'all') {
+		$msg = __FUNCTION__."| Getting Whole Config File";
+		//addComment($nid,$msg);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+		return $ini;
+	}else
+	if (isset($ini[$section])) {
+		$msg = __FUNCTION__."| USE Config Section: $section";
+		//addComment($nid,$msg);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg.' | Count = '.count($ini[$section]),1);
+		return $ini[$section];
+	}
+
+	$msg = __FUNCTION__."| NO Config Section: $section";
+	//addComment($nid,$msg);
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+	return null;
+}
+
+/*
+ * Function to create PDF Document
+ * @param $content Value of the page content
+ * @param $page_width width of the current document
+ * @param $page_heigh height of the current document
+ * @param $bleed if edge is required
+*/
+function generate_pdf($content, $pdf_width, $pdf_height, $bleed = false) {
+    $bleed_size = 10; //5mm either side of the doc
+    $width      = ($bleed ? $pdf_width + $bleed_size : $pdf_width); //if bleed - increase by 10mm
+    $height     = ($bleed ? $pdf_height + $bleed_size : $pdf_height); //if bleed - increase by 10mm
+    
+    $mpdf       = new \Mpdf\Mpdf([
+        'mode'          => 'utf-8',
+        'format'        => [$width, $height],
+        'img_dpi'       => 300,
+
+    ]);
+
+    $mpdf->SetDisplayMode('fullpage');
+
+    if($bleed) {
+			$mpdf->WriteHTML(add_bleed($pdf_width, $pdf_height).$content);
+    } else
+			$mpdf->WriteHTML($content);
+
+    $mpdf->Output();
+}
+
+/*
+ * Function to add bleed on the edge if the Document
+ * @param $content Value of the page content
+ * @param $width width of the current document
+ * @param $heigh height of the current document
+*/
+
+function add_bleed($width, $height) {
+    $bleed = '
+<style>
+    @page {
+        size: '.$width.'mm '.$height.'mm;
+        marks: crop;
+        margin: 0;
+    }
+</style>
+';
+    return $bleed;
+}
+/*
+ * Function to generate a combined TOC for the Gazette Document
+ * @param $nid Submission Number
+ * @param $toc_info is an array of table of contents
+*/
+	function generate_multitoc_page($nid, $toc_info, $specialTOC = false){
+		global $config;
+
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| START | Nid = $nid",1);
+
+		$pubdate = $toc_info['pubdate'];
+		$gzt_path = $toc_info['cache_path'];
+		$gztTPLDIR = 'layouts/gazettes/'.$toc_info['tplfolder'];
+
+		$tpl = 'toc';
+		//if ($specialTOC) $tpl = 'roadcarrier';
+		$issn = '';
+		$form_order = array();
+		
+
+		$gztTPLDIR = 'layouts/gazettes/'.$toc_info['tplfolder'];
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| NEW TOC Sections = $tpl | Calling get_page(tpl=$gztTPLDIR) | Nid = $nid",1);
+		$tpl = 'toc';
+
+//		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| toc_info = ".print_r($toc_info,true),1);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Calling get_multi_section_page(toc_info=, gzt_path=$gzt_path, gztTPLDIR=$gztTPLDIR, issn=, tpl=$tpl) | Nid = $nid",1);
+		$pdf_file = get_multi_section_page(
+			$toc_info,
+			$gzt_path,
+			$gztTPLDIR,
+			$issn,
+			$tpl
+		);
+		if (!is_null($pdf_file)) {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Generate TOC for GZT = ".basename($pdf_file)." | Nid = $nid",1);
+			//$outfile = "$gzt_path/gzt_$tpl.pdf";
+			return array('success'=>true,'pdf'=>$pdf_file,'order'=>$form_order);
+		}
+		$msg = __FUNCTION__."| FAILED to Generate TOC | Nid = $nid";
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+		return array('success'=>false,'message'=>$msg);
+	}
+/*
+ * Function to generate a Gazette PDF File from external content in Z95Prov
+ * @param $nid Submission Number
+ * @param $gzt_files is an array of gzt files sorted by form and province/dept
+ * @param $outfile is a string of file path for the file generated pdf
+ * @param $gzt_info is an array of table of contents and other properties of the gazette
+*/
+function generate_externalcontent_pdf($nid, &$gzt_files,$outfile,&$gzt_info) {
+	// initiate FPDI
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| START GZT Generation to $outfile | Nid = $nid".PHP_EOL,1);
+
+	if (!is_array($gzt_files)) {
+		$error_msg = __FUNCTION__."| FAILED to initiate GZT Generator | INVALID input - not array: gzt_files | ".var_export($gzt_files,true);
+		tracker_builder($nid,$tm_start,'failed');
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+		return $error_msg;
+	}
+	if (empty($outfile)) {
+		$error_msg = __FUNCTION__."| FAILED to initiate GZT Generator | EMPTY input data: outfile";
+		tracker_builder($nid,$tm_start,'failed');
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+		return $error_msg;
+	}
+	if (!is_array($gzt_info)) {
+		$error_msg = __FUNCTION__."| FAILED to initiate GZT Generator | INVALID input - not array: gzt_info | ".var_export($gzt_info,true);
+		tracker_builder($nid,$tm_start,'failed');
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+		return $error_msg;
+	}
+	$divisor = $gzt_info['divisor']; //128 pages makes a book
+	$maxBlanks = $gzt_info['maxblanks']; //maximum 4 blanks allowed
+	$header = null;
+	if (isset($gzt_info['pubdate'])) {
+		$EA_dates = get_dates($nid,$gzt_info['pubdate']);
+		if (!isset($EA_dates['E']) || !isset($EA_dates['A'])) {
+			if (isset($EA_dates['eng']) && isset($EA_dates['afr'])) {
+				$EA_date['E'] = $EA_dates['eng'];
+				$EA_date['A'] = $EA_dates['afr'];
+			} else {
+				$error_msg = __FUNCTION__."| FAILED to initiate GZT Generator | MISSING data: No Language Dates | ".print_r($EA_dates,true);
+				tracker_builder($nid,$tm_start,'failed');
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+				return $error_msg;
+			}
+		} else {
+			$EA_date['E'] = $EA_dates['E'];
+			$EA_date['A'] = $EA_dates['A'];
+		}
+		if (!isset($EA_date['E']) || !isset($EA_date['A'])) {
+			$error_msg = __FUNCTION__."| FAILED to initiate GZT Generator | MISSING data: No Language Dates | ".print_r($EA_dates,true);
+			tracker_builder($nid,$tm_start,'failed');
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+			return $error_msg;
+		}
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Using divisor = $divisor | Nid = $nid | Publication = ".json_encode($EA_date,true).PHP_EOL,1);
+	} else {
+		$error_msg = __FUNCTION__."| FAILED to initiate GZT Generator | MISSING publication Date ";
+		tracker_builder($nid,$tm_start,'failed');
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+		return $error_msg;
+	}
+
+	if ($gzt_info['header_footer']) {
+		$header = array(
+			0 => 'GOVERNMENT GAZETTE, '.$EA_date['E'],
+			1 => 'STAATSKOERANT, '.$EA_date['A']
+		);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Adding Header | Nid = $nid".PHP_EOL,1);
+		//
+		//HTML templates at build time
+		$header_en = '<table border="0" style="padding-left:2px;padding-right:2px; width:100%; text-align:center; border-bottom: 4px solid #000;font-size:9pt;"><tr><td style="text-align:left;">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold;">{page_number}</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;No. '.$gzt_info['gzt_number'].'</td><td>PROVINCIAL GAZETTE, EXTRAORDINARY, '.$EA_date['E'].'</td><td width="23%">&nbsp;</td></tr></table>';
+		$header_af = '<table border="0" style="padding-left:2px;padding-right:2px; width:100%; text-align:center; border-bottom: 4px solid #000;font-size:9pt;"><tr><td width="23%">&nbsp;</td><td style="text-align:center;">PROVINCIAL GAZETTE, EXTRAORDINARY, '.$EA_date['E'].'</td><td align="right" style="text-align:right;">No. '.$gzt_info['gzt_number'].'&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="font-weight:bold; padding-right:5px;">{page_number}</span>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td></tr></table>';
+		$nextpage_tpl = '<table style="width:100%; text-align:center;"><tr><td>&nbsp;</td><td style="width:70%; font-size: 11pt; text-align:center; border: 2px solid #000; padding:10px;">CONTINUES ON PAGE {page_number} OF BOOK {book_number}</td><td>&nbsp;</td></tr></table>';
+		$parts_tpl = '<div style="padding-left:30%;width:100%; text-align:center;"><div style="background-color:#ddd; width:45%; font-size: 20pt; text-align:center; border: 3px solid #000; border-radius: 25px;"><div style="padding:5px;"><span style="font-variant-caps: small-caps;">Part {PART} of {PARTS}</span></div></div></div>';
+		$parts_tpl1 = '<table border="0" style="padding-left:2px;padding-right:2px; width:100%; text-align:center;"><tr><td width="25%" style="text-align:left;">&nbsp;</td><td style="width:45%; font-size: 20pt; text-align:center; border: 3px solid #000; border-radius: 25px;"><div style="padding:5px;text-transform: uppercase;"><span style="font-variant-caps: small-caps;">Part {PART} of {PARTS}</span></div></td><td width="25%">&nbsp;</td></tr></table>';
+		$backpage_tpl = '<div style="width:100%; font-size: 9pt;text-align:center;  border: 2px double #000; border-radius: 15px;margin-top:-16mm;"><div style="padding:25px;">Printed by and obtainable from the Government Printer, Bosman Street, Private Bag X85,
+Pretoria, 0001 <br>Contact Centre Tel: 012-748 6200. eMail: info.egazette@gpw.gov.za<br>Also available at the Legal Advisory Services,<em><b> Province of the Eastern Cape<b></em>, Private Bag X0047, Bisho, 5605  Tel. (040) 635-0052
+</div></div>';
+		$footer_tpl = '<table style="width:100%; font-size: 9pt;"><tr><td width="12%"></td><td width="65%" align="center"><span style="background-color:#ddd;"><span style="padding: 1px; padding-left:2px;padding-right:2px;">This gazette is also available free online at <a style="color: #000" href="https://www.gpwonline.co.za/"><b>www.gpwonline.co.za</b></a></span></span></td><td width="12%"></td></tr></table>';
+	} else
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Skipping Adding Header? | Nid = $nid".PHP_EOL,1);
+		
+	//$pdfPages = array();
+	$gztNumber = '';
+	if (!is_null($gzt_info) && isset($gzt_info['gzt_number']))
+		$gztNumber = 'No. '.$gzt_info['gzt_number'];
+
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Adding Gazette Number = $gztNumber | Nid = $nid".PHP_EOL,1);
+//if (1 == 0) {
+	//$toc_pdf = new Fpdi( 'P', 'mm', 'A4' );
+	$toc_pdf = new Mpdf(['tempDir' => __DIR__ . '/cache/gazettes/tmp','format'=>'A4','orientation'=>'P']);
+	$totalTOCPages = $pageCount = $parts = 0;
+	$gzt_info_dept = array();
+	$specialTOC = false;
+	$static_pages = array();
+	$tplfolder = 'layouts/gazettes/easterncapeliquor';
+
+	//Load Static Page Configuration
+	try {
+		$inifile = $tplfolder.DIRECTORY_SEPARATOR.'static_pages.ini';
+		if (!file_exists($inifile)) {
+			$errormsg = __FUNCTION__."| WARNING | Config missing:  $inifile | SKIP STATICS files";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+		} else {
+			$ini = parse_ini_file ($inifile, true);
+			if (count($ini) == 0) {
+				$errormsg = __FUNCTION__."| WARNING: EMPTY Configuration file: $inifile";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+			} else 
+				$static_pages = $ini['STATICS'];
+		}
+	} catch (Exception $p) {
+		$errormsg = __FUNCTION__."| FATAL ERROR: Failed to Load Static Page config file [$inifile]: ".$p->getMessage();
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$errormsg,1);
+		tracker_builder($nid,$tm_start,'failed');
+		return array('success'=>false,'message'=>$errormsg);
+	}
+	$number_of_statics = count($static_pages);
+	$totalTOCPages = $number_of_statics+1;
+	$toc_offset = $number_of_statics;
+	$head_pdfPage = 0;
+
+ if (in_array($gzt_info['typeofgazette'],array('Road Carrier Permits','Legal A'))){
+		$specialTOC = true;
+	}
+	//CREATE TOC PDF from each file
+	//foreach ($seq_sections as $fid=>$sectionid) {
+	foreach ($gzt_files as $ntype=>$gzt_content_files) {
+		if ($ntype == 'Z95PROV') {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Prep TOC | Adding dept = $ntype | GZT File = $pageCount | Nid = $nid".PHP_EOL,1);
+			continue;
+		}
+
+		foreach ($gzt_content_files as $cid=>$gzt_content_file)
+		{
+			//$id = $sectionid;
+			//$gzt_content_file = $gzt_files[$sectionid];
+			$pageCount++;
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Prep TOC | Adding dept = $ntype | GZT File = $pageCount | Nid = $nid".PHP_EOL,1);
+			$gzt_file = $gzt_content_file['filepath'];
+			$gzt_toc = $gzt_content_file['toc'];
+			$bgzt_file = basename($gzt_file);
+			if ($specialTOC) {
+				$gzt_toc_line = $gzt_content_file['key'];
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| ADDING RoadCarrier TOC | TOC Location = $gzt_toc_line | Nid = $nid | file = $bgzt_file",1);
+			} else $gzt_toc_line = $gzt_toc;
+			//$gzt_toc_line = $gzt_toc;
+			//$pdfPage += $gzt_content_file['pages'];
+			if (!file_exists($gzt_file)) {
+				$msg = __FUNCTION__."| MISSING Ordinary File | Prep TOC | SKIP TOC: GZT File = $pageCount | Nid = $nid | file = $gzt_file | ".print_r($gzt_content_file,true);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+				return $msg;
+			}
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| ADDING External Ordinary File | dept = $ntype | Prep TOC[$gzt_toc] | Adding TOC: GZT = $pageCount | Nid = $nid | file = $gzt_file",1);
+			try {
+				$tocPageCount = $toc_pdf->setSourceFile($gzt_file);
+			} catch (Exception $e) {
+					$pfile = basename($gzt_file);
+					$autofix_dir = dirname($gzt_file);
+					$fixedpdf = $autofix_dir."/cropped_fixed-".date('U')."-$pfile";
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| AutoFixing Cropped Content START | file = $fixedpdf | Prep TOC[$gzt_toc] | Adding TOC: POI = $pageCount | Nid = $nid",1);
+					$fixpdf = exec("pdfunite $gzt_file $fixedpdf");//AutoFix1 - this is a simple method to use pdftools - pdfunite fix by recreating clean pdf file = $fixedpdf
+					if (!file_exists($fixedpdf)) {
+						file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| AutoFix FAILED | Message = $fixpdf | Cannot ADD Cropped File Nid = $nid | file = $gzt_file",1);
+						return __FUNCTION__.'| Cropped Content cannot be Imported: encrypted or compressed PDF not supported';
+					}
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| AutoFix COMPLETED | file = $fixedpdf | Prep TOC[$gzt_toc] | Adding TOC: POI = $pageCount | Nid = $nid",1);
+					$tocPageCount = $toc_pdf->setSourceFile($fixedpdf);
+					$gzt_files[$ntype][$cid]['bad_cropped_file'] = $gzt_file;
+					$gzt_file = $fixedpdf;
+					$gzt_files[$ntype][$cid]['filepath'] = $fixedpdf;
+					$bgzt_file = basename($gzt_file);
+					if ($tocPageCount === false || $tocPageCount == 0) {
+						$msg = __FUNCTION__."| AutoFix1 FATAL ERROR | AutoFix1 did not work either | Cannot ADD Cropped File | Prep TOC[$gzt_toc] Nid = $nid";
+						file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',"$msg | file = $gzt_file",1);
+						return $msg;
+					}
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| AutoFix1 SUCCESS | file = $fixedpdf | Prep TOC[$gzt_toc] | Adding TOC: POI = $pageCount | Nid = $nid | file = $gzt_file",1);
+			}
+			if ($tocPageCount === false) {
+				$error_msg = __FUNCTION__."| FAILED to Add Ordinary File | Prep TOC | Cannot Add TOC from GZT  file = $pageCount | Nid = $nid | file = $gzt_file";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+				return $error_msg;
+			} else
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| ADDED External Ordinary File | Prep TOC | Adding TOC: GZT File = $pageCount | Nid = $nid | file = $bgzt_file",1);
+
+			$totalTOCPages += $tocPageCount;
+			if ($totalTOCPages > $divisor) {
+				$parts = ceil($totalTOCPages/$divisor);
+			} else {
+				$parts = 1;
+			}
+
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Total pages = $totalTOCPages | Prep TOC = $gzt_toc_line | Found PARTS = $parts | Nid = $nid".PHP_EOL,1);
+			$gzt_info['parts'] = $parts;
+			$header_template_file = str_replace(array(" ","\'"),array('',''),"forms/Z95PROV_".strtoupper($gzt_content_file['typeofnotice'])."_toc.ntpl");
+			if (!file_exists($header_template_file)) {
+				$error_msg = __FUNCTION__."| Prep TOC | Missing NOTICE Header Template = ".basename($header_template_file)." | Nid = $nid";
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg." | MISSING File = ".$header_template_file,3);
+				return $error_msg;
+			}
+			$header_line = file_get_contents($header_template_file);
+			if (!isset($gzt_info_dept[$header_line]))
+				$gzt_info_dept[$header_line] = array();
+			if (!isset($gzt_info_dept[$header_line][$ntype]))
+				$gzt_info_dept[$header_line][$ntype] = array();
+
+			$gzt_info_dept[$header_line][$ntype][] = array (
+				'@notice_number@'=>$nid,
+				'@toc_line@'=>$gzt_toc_line,
+				//'@toc_sub@'=>$gzt_toc_sub,
+				'@padding_dots@'=>'......',
+				'@gzt@'=>$gzt_info['gzt_number'],
+				'@toc_page@'=>$totalTOCPages,
+			);
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Prep TOC_SUB = $gzt_toc_sub | gzt file = $bgzt_file | Pages = $tocPageCount | Nid = $nid".PHP_EOL,1);
+		} //for external content in dept
+	} //for depts
+
+	unset($toc_pdf); //Done with pre-generation actions
+
+	$gzt_info['toc_items'] = $gzt_info_dept; //add toc items
+
+	$gzt_info['page'] = 1;
+	if ($parts > 1) {
+		$gzt_info['part'] = 1;
+		$gzt_info['parts'] = $parts;
+	}
+
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FrontPage | Creating FrontPage for ".$gzt_info['category']." | Nid = $nid".PHP_EOL,1);
+	// Generate front page
+$gzt_frontpage_pdf = generate_gzt_page($nid, $gzt_info, 'frontpage');
+
+if (is_null($gzt_frontpage_pdf) || empty($gzt_frontpage_pdf) || !file_exists($gzt_frontpage_pdf)) {
+		$error_msg = __FUNCTION__."| FAILED to get FrontPage from category = ".$gzt_info['category'];
+		tracker_builder($nid,$tm_start,'failed');
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+		return $error_msg;
+	}
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FrontPage SUCCESS | got Header from File = ".$gzt_frontpage_pdf,3);
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| BlankPage | Creating BlankPage for ".$gzt_info['category']." | Nid = $nid".PHP_EOL,1);
+	$gzt_blankpage_pdf = generate_gzt_page($nid, $gzt_info, 'blankpage');
+	if (is_null($gzt_blankpage_pdf) || empty($gzt_blankpage_pdf) || !file_exists($gzt_blankpage_pdf)) {
+		$error_msg = __FUNCTION__."| FAILED to get BlankPage from TPL = ".$gzt_info['category'];
+		tracker_builder($nid,$tm_start,'failed');
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+		return $error_msg;
+	}
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| BlankPage SUCCESS | got Header from File = ".$gzt_blankpage_pdf,3);
+	$page_tpl = 'backpage';
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| BackPage | Creating BackPage for ".$page_tpl." | Nid = $nid".PHP_EOL,1);
+			
+	$gzt_backpage_pdf = generate_gzt_page($nid, $gzt_info, $page_tpl);
+	if (is_null($gzt_backpage_pdf) || empty($gzt_backpage_pdf) || !file_exists($gzt_backpage_pdf)) {
+		$error_msg = __FUNCTION__."| FAILED to get BlankPage from TPL = ".$page_tpl;
+		tracker_builder($nid,$tm_start,'failed');
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+		return $error_msg;
+	}
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| BackPage PDF Created: SUCCESS | got Header from File = ".$gzt_backpage_pdf,3);
+
+	//$gzt_info = $gzt_info;
+	$gzt_info['category'] = 'gazette';
+	$tjeItems = count($gzt_info['toc_items']);
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Callin generate_toc_page($nid,gzt_info) | Items = $tjeItems | Nid = $nid".PHP_EOL,1);
+	$gzt_toc_prep = generate_toc_page($nid, $gzt_info, $specialTOC);
+	if (!is_array($gzt_toc_prep) || !isset($gzt_toc_prep['pdf']) || !isset($gzt_toc_prep['order'])) {
+		$error_msg = __FUNCTION__."| FAILED1 to generate TOC | nid = $nid";
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+		return $error_msg;
+	}
+	$gzt_header_pdf = $gzt_toc_prep['pdf'];
+	if (is_null($gzt_header_pdf) || empty($gzt_header_pdf) || !file_exists($gzt_header_pdf)) {
+		$error_msg = __FUNCTION__."| FAILED to get TOC from TPL = ".$gzt_info['tplfolder'];
+		tracker_builder($nid,$tm_start,'failed');
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+		return $error_msg;
+	}
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| TOC SUCCESS | got Gazette Header from File = ".$gzt_header_pdf,3);
+	$pageCount = 0;
+	
+
+	$templateId = $size = null;
+	$tempDir = __DIR__ . '/cache/gazettes/tmp/'.$nid;
+	if (!file_exists($tempDir)) {
+		if (!@mkdir($tempDir,0775,true)) {
+			$msg = __FUNCTION__."| FAILED to create temporary generator folder";
+			addComment($nid, "$msg");
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',"$msg | Invalid Path = $tempDir".PHP_EOL.'---EXIT---',3);
+			return $msg;
+		}
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Created NEW Temp Folder = ".$tempDir,3);
+	} else
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Reusing EXISTING Temp Folder = ".$tempDir,3);
+
+	$pdf = new Mpdf(['debug'=>true,
+    'default_font' => 'HelveticaLTStd',
+		'tempDir' => $tempDir,
+		'format'=>'A4',
+		'orientation'=>'P']);
+	$pdf->SetDefaultFont('HelveticaLTStd');
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FrontPage - Loading from File = ".$gzt_frontpage_pdf,3);
+	$firstPageCount = $pdf->setSourceFile($gzt_frontpage_pdf); 
+	$frontPageId = $pdf->importPage(1);
+	$pdf->AddPage();
+	$pdf->useTemplate($frontPageId); 
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FrontPage - Imported 1 of $firstPageCount Page",3);
+	
+file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Adding STATIC Pages",1);
+
+
+$static_pages = array();
+$tplfolder = 'layouts/gazettes/easterncapeliquor'; 
+$inifile = $tplfolder . DIRECTORY_SEPARATOR . 'static_pages.ini';
+if (file_exists($inifile)) {
+    $ini = parse_ini_file($inifile, true);
+    if (!empty($ini['STATICS'])) {
+        $static_pages = $ini['STATICS'];
+    }
+}
+
+if (count($static_pages) > 0) {
+    foreach ($static_pages as $seq => $gzt_staticpage) {
+        $preload_static = "$tplfolder/static_preload/static_$gzt_staticpage.pdf";
+        if (!file_exists($preload_static)) {
+            file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| WARNING: Missing preloaded static page: $preload_static | Re-generating",1);
+            $gzt_staticpage_pdf[$gzt_staticpage] = generate_gzt_page($nid, $gzt_info, 'static_'.$gzt_staticpage);
+        } else {
+            $gzt_staticpage_pdf[$gzt_staticpage] = $preload_static;
+        }
+
+        if (!isset($gzt_staticpage_pdf[$gzt_staticpage]) || !file_exists($gzt_staticpage_pdf[$gzt_staticpage])) {
+            file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FAILED to load or generate static page: $gzt_staticpage",1);
+            continue;
+        }
+
+        $staticFile = $gzt_staticpage_pdf[$gzt_staticpage];
+        $staticPageCount = $pdf->setSourceFile($staticFile);
+        for ($sp = 1; $sp <= $staticPageCount; $sp++) {
+            $templateId = $pdf->importPage($sp);
+            $cPageNo++;
+            $totalPages++;
+            $pdf->AddPage();
+            if (($cPageNo % 2) == 0) {
+                $pdf->SetXY(1, 10);
+                $pdf->WriteHTML(str_replace('{page_number}',$cPageNo,$header_en));
+            } else {
+                $pdf->SetXY(1, 10);
+                $pdf->WriteHTML(str_replace('{page_number}',$cPageNo,$header_af));
+            }
+            $pdf->useTemplate($templateId);
+            file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Added StaticPage '$gzt_staticpage' as Page $cPageNo",2);
+        }
+    }
+}
+
+
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| TOC Loading from File = ".$gzt_header_pdf." | Nid = $nid".PHP_EOL,1);
+	$pageCount = $pdf->setSourceFile($gzt_header_pdf); //add get toc pages
+	$pdf->defaultfooterline = 0;
+	// Add Static Pages
+	//$pdf->SetFooter($footer_tpl,'');
+	//$pdf->SetHTMLFooter($footer,'');
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Importing TOC to GZT from ".basename($gzt_header_pdf)." = $pageCount | Nid = $nid".PHP_EOL,1);
+	for ($pageNo = 1; $pageNo <= $pageCount; $pageNo++) {
+		//$extractPage = $pageNo-1;
+		$showPageNo = $pageNo+1; //Start on page 2 for TOC
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Importing Page = $pageNo | Nid = $nid".PHP_EOL,1);
+		$templateId = $pdf->importPage($pageNo);
+		try {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Adding New Page $pageNo | Nid = $nid".PHP_EOL,1);
+			$pdf->AddPage();
+		} catch (Exception $e) {
+			$error_msg = __FUNCTION__."| Exception Error: ".$e->getMessage();
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+			return $error_msg;
+			//error_log($e->getMessage());  // Log any exceptions thrown
+		}
+
+		//list ($x,$y,$width,$height,$orientation) = get_center_page($nid,$pdf,$templateId);
+		//$size = $pdf->getTemplateSize($templateId);
+		//file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Reading Template size = ".json_encode($size,true)." | Nid = $nid".PHP_EOL,1);
+		//$pdf->AddPage($size['orientation'], $size);
+		// use the imported page and adjust the page size
+		//file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Importing TOC Page $pageNo of $pageCount | AddPage()",1);
+		if (!is_null($gzt_info) && isset($gzt_info['nid'])) {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Importing TOC Page $pageNo of $pageCount",1);
+			if (($showPageNo % 2) == 0) {
+				$pdf->SetXY(1, 11);
+				$pdf->WriteHTML(str_replace('{page_number}',$showPageNo,$header_en));
+			} else {
+				$pdf->SetXY(1, 11);
+				$pdf->WriteHTML(str_replace('{page_number}',$showPageNo,$header_af));
+			}
+
+			//$y=20; $pdf->Line(16, $y, 210-16, $y);
+			//$pdf->SetHTMLFooter($footer,'O');
+			//$pdf->SetHTMLFooter($footer,'E');
+			$pdf->useTemplate($templateId);
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Imported TOC Page $pageNo of $pageCount | useTemplate()",1);
+			//$pdf->useTemplate($templateId, 16, 25, 267); //90% of A4 width(297)
+		} else
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| SKIPPING Header: $pageNo of $pageCount | getTemplateSize = ".print_r($size,true),1);
+	}
+
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| TOC Loaded | Start Loading Ordinary External Pages | Nid = $nid".PHP_EOL,1);
+
+	$book = 1;
+	$run_once = true;
+	$totalPages = $pageCount+1;
+	$cPageNo = $totalPages;
+	//foreach ($seq_sections as $fid=>$sectionid) {
+	foreach ($gzt_files as $ntype=>$gzt_content_files) {
+		if (!isset($gzt_info_dept['Z95Prov'][$ntype]))
+			$gzt_info_dept['Z95Prov'][$ntype] = array();
+
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Loading Department $ntype | from External PDF File",1);
+		foreach ($gzt_content_files as $cid=>$gzt_content_file)
+		{
+		//$id = $sectionid;
+		//$gzt_content_file = $gzt_files[$sectionid];
+		//$gzt_content_file='ordinary.pdf';
+		$gzt_file = $gzt_content_file['filepath'];
+		$nnum = $gzt_content_file['nnum'];
+		$bgzt_file = basename($gzt_file);
+		$gzt_toc = $gzt_content_file['toc'];
+		//$pdfPages[$totalPages+1] = $gzt_toc;
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Submission = $nnum | Sourcing Ordinary External PDF File = ".$bgzt_file,1);
+		try {
+			$ordinaryPageCount = $pdf->setSourceFile($gzt_file);
+		} catch (Exception $e) {
+			$error_msg = __FUNCTION__."| FAILED to source External File = $gzt_file | FATAL Error: ".$e->getMessage();
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+			return $error_msg;
+			//error_log($e->getMessage());  // Log any exceptions thrown
+		}
+		//$pdf->SetFooter($footer_tpl);
+		$pdf->SetFooter($footer_tpl);
+		$pdf->defaultfooterline = 0;
+		$pdf->SetHTMLFooter($footer_tpl,'');
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Importing Ordinary External GZT file ".$bgzt_file." with $ordinaryPageCount Pages | Nid = $nid".PHP_EOL,1);
+		// iterate through all pages of ordinary
+		for ($pageNo = 1; $pageNo <= $ordinaryPageCount; $pageNo++) {
+			// import a page
+			$templateId = $pdf->importPage($pageNo);
+			list ($x,$y,$width,$height,$orientation) = get_center_page($nid,$pdf,$templateId);
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Got Dimensions for $pageNo | width - $width | height = $height | Nid = $nid".PHP_EOL,1);
+			//$cPageNo = $pageCount; // + $pageNo;
+			$cPageNo++;
+			$pageCount++;
+
+			$pdf->AddPage($orientation);
+			$pdf->SetFont('HelveticaLTStd','',9);
+			$lang = 'eng';
+			
+			if (($cPageNo % 2) == 0) {
+				$pdf->SetXY(1, 10);
+				$pdf->WriteHTML(str_replace('{page_number}',$cPageNo,$header_en));
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Added English PAGE Header Page = $cPageNo | Nid = $nid".PHP_EOL,1);
+			} else {
+				$lang = 'afr';
+				$pdf->SetXY(1, 10);
+				$pdf->WriteHTML(str_replace('{page_number}',$cPageNo,$header_af));
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Added Afrikaans PAGE Header Page = $cPageNo | Nid = $nid".PHP_EOL,1);
+			}
+			// use the imported page and adjust the page size
+			//$pdf->useTemplate($templateId, ['adjustPageSize' => true]);
+			if ($pageNo == 1 && $run_once && !$specialTOC) {
+				$run_once = false; //Ensure single run
+				//$size = $pdf->getTemplateSize($templateId);
+				//file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Local Page = $pageNo | Main (cPageNo  = $cPageNo :: pageCount = $pageCount) | Local Imported Paper Dimensions = ".print_r($size,true),1);
+				$css_file = '';
+				$notice_template_file = str_replace(' ','',"forms/Z95PROV-$lang.ntpl");
+				$header_template_file = str_replace(' ','',"forms/Z95PROV_header_".strtoupper(str_replace(' ','',$ntype)).".ntpl");
+				if (!file_exists($header_template_file)) {
+					$error_msg = __FUNCTION__."| Missing NOTICE Header Template = ".basename($header_template_file)." | Nid = $nid".PHP_EOL;
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+					return $error_msg;
+				} else {
+					$header_line = file_get_contents($header_template_file);
+					$fsz = filesize($header_template_file);
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Loading NOTICE Header Template = ".basename($header_template_file)." ($fsz bytes) | Nid = $nid".PHP_EOL,1);
+
+					if (!file_exists($notice_template_file)) {
+						$error_msg = __FUNCTION__."| Missing NOTICE Header Template = ".basename($notice_template_file)." | Nid = $nid";
+						tracker_builder($nid,$tm_start,'failed');
+						file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+						return $error_msg;
+					}
+					$notice_line = file_get_contents($notice_template_file);
+					$nsz = filesize($notice_template_file);
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Found NOTICE Header Template = ".basename($notice_template_file)." ($nsz bytes) | Nid = $nid".PHP_EOL,1);
+				}
+
+				$ton_y = 18;
+				$pdf->SetXY(1, $ton_y);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Adding NOTICE Header Line from Template at Y=$ton_y  [".strlen($header_line)."] bytes | Nid = $nid".PHP_EOL,1);
+				$pdf->Cell(200,20,$pdf->WriteHTML($header_line),0,0,'C');
+
+				$ton_y = 27;
+				$pdf->SetXY(1, $ton_y);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Adding NOTICE Header from Template | x=$x, y=$y+$ton_y, w=$width | [".strlen($notice_line)."] bytes | Nid = $nid".PHP_EOL,1);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log', "DEBUG: ntype value = " . print_r($ntype, true), 1);
+				$pdf->WriteHTML(str_replace(array('{*Z95PROV-PublicationYear}','{*Z95PROV-TYPEOFNOTICE}','{*Z95-NoticeNumber}','{Content=external}'),array(date('Y',strtotime($gzt_info['pubdate'])),$ntype,$gzt_info['notice_number'],''),$notice_line));
+				//$pdf->useTemplate($templateId, 1, 37, 200,246.5); //Insert Page from source pdf at x=29, w=200
+				//$used = $pdf->useTemplate($templateId, $x, $ton_y, $width, $height-10);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log', "Notice Number = " . $gzt_info['notice_number'], 1);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Adding First Page: Book $book | Page# = $pageNo | x=$x, y=10+$ton_y, w=$width, h=$height-20 | Nid = $nid".PHP_EOL,3);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| what inside notice: Book $book | Page# = $notice_line | Nid = $nid".PHP_EOL,3);
+				$used = $pdf->useTemplate($templateId, $x, $ton_y+10, $width, $height-20);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Added First Page: Book $book | Page# = $pageNo | x=$x, y=10+$ton_y, w=$width, h=$height-20 | Nid = $nid".PHP_EOL,3);
+
+			} else {
+				$ton_y=22;
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Adding Other Page: Book $book | Page# = $pageNo | x=$x, y=$ton_y, w=$width, h=$height-15 | Nid = $nid".PHP_EOL,3);
+				//$pdf->useTemplate($templateId, 1, 22, 200, 250);  //Insert Page from source pdf at x=22 and w=200
+				$used = $pdf->useTemplate($templateId, $x, $ton_y, $width, $height-15);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Added Other Page: Book $book | Page# = $pageNo | x=$x, y=$ton_y, w=$width, h=$height-15 | Nid = $nid".PHP_EOL,3);
+			}
+
+			//$y=20; $pdf->Line(16, $y, 210-16, $y); //Draw Line at top: Line(x1,y1,x2,y2); 
+			if ($cPageNo > 1 && (($cPageNo+1) % $divisor) == 0) {
+				$ext =substr($outfile,strlen($outfile)-4);
+				$part_outfile =substr($outfile,0,strlen($outfile)-4).'-'.$book.$ext;
+				$pdf->AddPage("P");
+				$cPageNo++;
+				$part = floor($cPageNo / $divisor);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Multiple Books | Books = $parts | part = $part | Ends At Page# = $cPageNo | file = $part_outfile | Nid = $nid".PHP_EOL,2);
+
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Book $book | BackPage - Loading from File = ".$gzt_backpage_pdf,2);
+				//$cPageNo = $totalPages;
+				if (($cPageNo % 2) == 0) {
+					$pdf->SetXY(1, 10);
+					$pdf->WriteHTML(str_replace('{page_number}',$cPageNo,$header_en));
+				} else {
+					$pdf->SetXY(1, 10);
+					$pdf->WriteHTML(str_replace('{page_number}',$cPageNo,$header_af));
+				}
+				$book++;
+				//$totalPages++;
+				//$pdf->useTemplate($backPageId, ['adjustPageSize' => true]);
+				$pdf->SetXY(125, 240);
+				$pdf->WriteHTML(str_replace(array('{book_number}','{page_number}'),array($book,$cPageNo+2),$nextpage_tpl));
+				$pdf->SetXY(1, 257);
+				$pdf->WriteHTML($backpage_tpl);
+				//$pdf->AddPage(); $cPageNo++;
+				$gzt_info['part'] = $book;
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FrontPage $book | Creating FrontPage for ".$gzt_info['category']." part=$book of parts=$parts | Nid = $nid".PHP_EOL,1);
+				if ($gzt_info['tplfolder'] == 'provincial') {
+					$pname = strtolower(str_replace(' ','',explode('/',$gzt_info['province'])[0]));
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FrontPage | Creating FrontPage for ".$gzt_info['category']." = $pname | Nid = $nid".PHP_EOL,1);
+					$gzt_frontpage_pdf = generate_gzt_page($nid, $gzt_info, $pname);
+				} else
+					$gzt_frontpage_pdf = generate_gzt_page($nid, $gzt_info, 'frontpage');
+				if (is_null($gzt_frontpage_pdf) || empty($gzt_frontpage_pdf) || !file_exists($gzt_frontpage_pdf)) {
+					$error_msg = __FUNCTION__."| FAILED to get FrontPage from TPL = ".$gzt_info['category'];
+					tracker_builder($nid,$tm_start,'failed');
+					file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$error_msg,3);
+					return $error_msg;
+				}
+				//file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FrontPage SUCCESS | got Header from File = ".$gzt_frontpage_pdf,3);
+				$firstPageCount = $pdf->setSourceFile($gzt_frontpage_pdf); //get total page count
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Book $book FrontPage at $cPageNo - Loading from File = ".$gzt_frontpage_pdf,2);
+				$frontPageId = $pdf->importPage(1); //Get Only One Page for FrontPage
+				$pdf->AddPage("P");
+				$cPageNo++;
+				$pdf->useTemplate($frontPageId, ['adjustPageSize' => true]);
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Book $book FrontPage Loaded = $book of $parts",2);
+				//$pdf->SetXY(1, 187);
+				//$pdf->WriteHTML(str_replace(array('{PART}','{PARTS}'),array($book,$parts),$parts_tpl));
+				$nPageCount = $pdf->setSourceFile($gzt_file); // This should still be same as ordinaryPageCount
+				//$pdf->SetFooter($footer_tpl);
+				$pdf->SetFooter($footer_tpl);
+				$pdf->defaultfooterline = 0;
+				$pdf->SetHTMLFooter($footer_tpl,'');
+				file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Continue Importing Ordinary to GZT from ".basename($gzt_file)." = $cPageNo of $ordinaryPageCount | Nid = $nid".PHP_EOL,1);
+				$totalPages = $cPageNo; //Update total thus far
+			} else file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Normal Book = $book | Page $cPageNo",4);
+		}
+		$totalPages = $cPageNo;
+		}
+	} //for all external content
+	tracker_builder($nid,$tm_start,'Generate Content Pages');
+	$tm_start = microtime(true);
+
+	$totalPagesBackPage = $totalPages + 1;
+	$m = ($totalPagesBackPage % $maxBlanks);
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| CHECK BLANKS | TotalPages ($totalPages+1) mod maxBlanks($maxBlanks) = $m",2);
+	if ($totalPagesBackPage > $maxBlanks && $m > 0) {
+		$blanks = ($maxBlanks-$m);
+		$pdf->SetFont('HelveticaLTStd','',9);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| ADDING BLANKS = $blanks",2);
+		$nblanks = 0;
+		for ($blank = 1; $blank <= $blanks; $blank++) {
+			$pdf->AddPage("P");
+			$totalPages++;
+			$nblanks++;
+			$cPageNo = $totalPages;
+			if (($cPageNo % 2) == 0) {
+				$pdf->SetXY(1, 10);
+				$pdf->WriteHTML(str_replace('{page_number}',$cPageNo,$header_en));
+			} else {
+				$pdf->SetXY(1, 10);
+				$pdf->WriteHTML(str_replace('{page_number}',$cPageNo,$header_af));
+			}
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| SUCCESS | BlankPage CREATED: $blank | Page = $totalPages",3);
+		}
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| ADDED BLANKS = $nblanks",2);
+	}
+ 	else
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| NO ADDED BLANKS",3);
+
+	tracker_builder($nid,$tm_start,'Generate Blank Pages');
+	$tm_start = microtime(true);
+	$totalPages++;
+
+	$page_tpl = 'backpage'; //Broken
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| BackPage - Loading from File = ".$gzt_backpage_pdf,3);
+	$backPageCount = $pdf->setSourceFile($gzt_backpage_pdf); //get total page count
+	$backPageId = $pdf->importPage(1);//Add Only one page for BackPage
+	$pdf->AddPage("P");
+	$cPageNo = $totalPages;
+	if (($cPageNo % 2) == 0) {
+		$pdf->SetXY(1, 10);
+		$pdf->WriteHTML(str_replace('{page_number}',$cPageNo,$header_en));
+	} else {
+		$pdf->SetXY(1, 10);
+		$pdf->WriteHTML(str_replace('{page_number}',$cPageNo,$header_af));
+	}
+	//$pdf->useTemplate($backPageId, ['adjustPageSize' => true]);
+	$pdf->useTemplate($backPageId);
+	$pdf->SetXY(1, 257);
+	$pdf->WriteHTML($backpage_tpl);
+	tracker_builder($nid,$tm_start,'Generate Back Page');
+
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| BackPage - Imported 1 Page",3);
+
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Outputing new GZT PDF: $outfile | Target Pages = $totalPages vs PageCount = $pageCount | Nid = $nid".PHP_EOL,3);
+	$pdf->Output($outfile,'F');
+
+	//$totalPages = $pageCount + $ordinaryPageCount;
+
+	tracker_builder($nid,$tm_start,'Generate Gazette PDF');
+	file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| EXIT | Nid = $nid".PHP_EOL,3);
+	return array('success'=>true,'outfile'=>$outfile,'message'=>'Gazette Generated Successfully');
+}
+/*
+ * Function to generate a Gazette Document
+ * @param $nid Submission Number
+ * @param $toc_info is an array of table of contents
+*/
+	function generate_toc_page($nid, $toc_info, $specialTOC){
+		global $config;
+
+		if ($specialTOC) {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FORWARD TO Multi-toc handler | Nid = $nid",1);
+			return generate_multitoc_page($nid, $toc_info, $specialTOC);
+		}
+
+
+		$pubdate = $toc_info['pubdate'];
+		$gzt_path = 'cache/gazettes/'.$pubdate.'/'.$toc_info['tplfolder']."/$nid/";
+		$gztTPLDIR = 'layouts/gazettes/'.$toc_info['tplfolder'];
+
+		$tpl = 'toc';
+		$issn = '';
+		$form_order = array();
+		
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| START without multi-toc | Nid = $nid | pubdate = $pubdate | tpl dir = $gztTPLDIR",1);
+		$sections = ini_config($gztTPLDIR);
+
+		if (isset($toc_info['form']))
+			$form = $toc_info['form'];
+
+		if (!isset($form))
+			$form = 'Z95Prov';
+
+		$newtpl=true;
+		$tpl = 'toc1';
+		if (!$newtpl) {
+			$msg = __FUNCTION__."| MIS | Form = ".$form;
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+			return array('success'=>false,'message'=>$msg);
+		}
+		if ($tpl == 'toc') {
+			$msg = __FUNCTION__."| WARNING | NO TOC Sections | Using Default $gztTPLDIR | Form = ".$form;
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg." | toc_info = ".print_r($toc_info,true),1);
+			return array('success'=>false,'message'=>$msg);
+			//return null;
+		} else {
+			$gztTPLDIR = 'layouts/gazettes/'.$toc_info['tplfolder']."/$tpl";
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| NEW TOC Sections = $tpl | Calling get_page(tpl=$gztTPLDIR) | Nid = $nid",1);
+			$tpl = 'toc';
+		}
+//		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| toc_info = ".print_r($toc_info,true),1);
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Calling get_page(toc_info=, gzt_path=$gzt_path, gztTPLDIR=$gztTPLDIR, issn=, tpl=$tpl) | Nid = $nid",1);
+		$pdf_file = get_page(
+			$toc_info,
+			$gzt_path,
+			$gztTPLDIR,
+			$issn,
+			$tpl
+		);
+		if (!is_null($pdf_file)) {
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| Generate TOC for GZT = ".basename($pdf_file)." | Nid = $nid",1);
+			//$outfile = "$gzt_path/gzt_$tpl.pdf";
+			return array('success'=>true,'pdf'=>$pdf_file,'order'=>$form_order);
+		}
+		$msg = __FUNCTION__."| FAILED to Generate TOC | Nid = $nid";
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',$msg,1);
+		return array('success'=>false,'message'=>$msg);
+	}
+	//
+	//
+//START Gazette Generator for Ordinaries
+	//set default options
+	$options = array(
+		'viewonly'=>false,
+		'engine'=> false,
+		'ordinary'=> 'path-to-file',
+		'tostatus'=> 'Pending',
+		'Debug'=> 3,
+		'report_level'=> 2,
+		'mode'=> 'DEV',
+	);
+
+	$short_options = "Ne:f:t:P:d:r";
+	$long_options = array(
+"viewonly"=>'N',
+"engine:"=>'e',
+"ordinary:"=>':f',
+"tostatus:"=>':t',
+"mode:"=>':P',
+"debug:"=>':d',
+"report_level:"=>':r');
+	$input_options = getopt($short_options, array_keys($long_options));
+ 
+	if ($argc > 1) { //file name passed to script
+		if(isset($input_options["N"]) || isset($input_options["viewonly"])) {
+			//Includes indexing of the INBOX - implies -D option
+			$options['viewonly'] = true;
+		}
+		if(isset($input_options["t"]) || isset($input_options["tostatus"])) {
+			$options['tostatus'] = isset($input_options["t"]) ? $input_options["t"] : $input_options["tostatus"];
+		}
+		if(isset($input_options["f"]) || isset($input_options["ordinary"])) {
+			$options['ordinary'] = isset($input_options["f"]) ? $input_options["f"] : $input_options["ordinary"];
+		}
+		if(isset($input_options["e"]) || isset($input_options["engine"])) {
+			//$options['engine'] = isset($input_options["e"]) ? $input_options["e"] : $input_options["engine"];
+			$options['engine'] = true;
+		}
+		if(isset($input_options["d"]) || isset($input_options["debug"])) {
+			$options['Debug'] = isset($input_options["d"]) ? $input_options["d"] : $input_options["debug"];
+			$s = ($options['Debug']*1);
+			if (!is_integer($s)) {
+				echo (nako()." | E20: Integer value expected between 0 and 4? $s\n");
+				exit(20);
+			}
+		}
+		if(isset($input_options["P"]) || isset($input_options["mode"])) {
+			$options['mode'] = isset($input_options["P"]) ? $input_options["P"] : $input_options["mode"];
+		}
+		if(isset($input_options["r"]) || isset($input_options["report_level"])) {
+			$options['report_level'] = isset($input_options["r"]) ? $input_options["r"] : $input_options["report_level"];
+			$s = ($options['report_level']*1);
+			if (!is_integer($s)) {
+				echo (nako()."| E30: Integer value expected between 1 and 2: $s\n");
+				exit(30);
+			}
+		}
+	} else {
+		$msg = "E10: No Default Options - File Path must be specified";
+		echo nako()."| $msg";
+		exit(10);
+	}
+	if (isset($config->PROD) && $config->PROD) {
+		if ($options['mode'] != 'PROD') {
+			$msg = "FATAL ERROR 253: mode ".$options['mode']." is NOT ALLOWED! Production mode is already set";
+			echo nako()."| $msg";
+			file_log_contents('logs/generateGZT.log',__FUNCTION__."| GZT Builder $msg",1);
+			exit (253);
+		}
+	}
+	if ($options['Debug'] > 3) print_r($options);
+	//
+
+	$gzt_generated = array('success'=>false,'message'=>'Generator NOT STARTED');
+	$ordinary = $options['ordinary'];
+	if (file_exists($ordinary)) {
+		$ret = json_decode(file_get_contents($ordinary),true);
+		if (!$ret) {
+			$gzt_body_pdf['message'] = 'NO External Content Detected - Generator Cannot Start';
+			file_log_contents('logs/generateGZT.log',__FUNCTION__."| GZT Builder FAILED to Get data from ordinary = $ordinary | Nid = $nid",1);
+			//echo "FAILED3: $ordinary";
+			echo json_encode($gzt_body_pdf);
+			exit (4);
+		}
+
+		$tjekae = count($ret);
+		$nid = $ret['nid'];
+		//file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| INPUT JSON from $ordinary data = ".print_r($ret,true),1);
+
+		$ret['gzt_info']['divisor'] = 128; //Create new Book every #pages
+		$ret['gzt_info']['maxblanks'] = 4; //Create new Blank Page ensure quads
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| START | GZT PDF generation from Ordinary files = $tjekae | load = $ordinary | Nid = $nid",1);
+		$use_internal_engine = $options['engine'];
+		$gzt_generated = generate_externalcontent_pdf($ret['nid'], $ret['gzt_files'], $ret['outfile'], $ret['gzt_info'],$use_internal_engine);
+		if (!isset($gzt_generated['outfile'])) {
+			$gzt_generated['message'] = 'Failed to get External Content Merged - Generator Stopped';
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| FAILED | Cannot Generate GZT PDF from Ordinary files | Nid = $nid | ".var_export($gzt_generated,true),1);
+			//echo "FAILED3: $ordinary";
+			echo json_encode($gzt_generated);
+			exit(3);
+		}
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| COMPLETED | GZT Building PDF from Ordinary files | Nid = $nid",1);
+		$gzt_body_pdf = $gzt_generated['outfile'];
+		if (!$gzt_body_pdf) {
+			$gzt_generated['message'] = 'NO External Content Detected - Generator Stopped';
+			file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| GZT Builder FAILED to Get merged PDF from Ordinary files = $ordinary | Nid = $nid",1);
+			//echo "FAILED2: $ordinary";
+			echo json_encode($gzt_generated);
+			exit (2);
+		}
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| GZT Generated PDF = $gzt_body_pdf | Nid = $nid ",1);
+		unlink($ordinary);
+		echo json_encode($gzt_generated);
+	} else {
+		file_log_contents('logs/generateGZT_Ordinary_'.$nid.'.log',__FUNCTION__."| GZT Builder FAILED to Get ordinary = $ordinary | Nid = $nid",1);
+		//echo "FAILED1: $ordinary";
+		echo json_encode($gzt_generated);
+		exit (1);
+	}

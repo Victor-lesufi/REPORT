@@ -9,10 +9,7 @@ error_log("Script started: " . date('Y-m-d H:i:s'));
 // Include the FPDF library
 require('fpdf186/fpdf.php'); // Ensure the path is correct
 // Database connection details
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "report";
+include 'connection.php'; // Include your database connection file
 // Create a connection
 $conn = new mysqli($servername, $username, $password, $dbname);
 // Check connection
@@ -135,6 +132,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
    <link rel="stylesheet" href="CSS/details.css">
 </head>
 <body>
+    <a href="teacher.php">Home</a>
     <h2>Search Student Details</h2>
     <!-- Search Form -->
     <form method="POST" action="">
@@ -142,7 +140,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                value="<?php echo htmlspecialchars($searchTerm); ?>" required>
         <input type="submit" value="Search">
     </form>
-    <button><a href="PDF.php">PDF</a></button>
+    <!-- <button><a href="PDF.php">PDF</a></button> -->
     <!-- Test PDF Button -->
     <form method="POST" action="">
         <input type="hidden" name="test_pdf" value="1">
@@ -163,6 +161,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     <th>Physical Science</th>
                     <th>Life Orientation</th>
                     <th>Geography</th>
+                    <th>VIEW PDF</th>
                 </tr>
             </thead>
             <tbody>
@@ -178,6 +177,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                             <td><?php echo isset($row['physical_science']) && $row['physical_science'] !== '' ? htmlspecialchars($row['physical_science']) : '-'; ?></td>
                             <td><?php echo isset($row['life_orientation']) && $row['life_orientation'] !== '' ? htmlspecialchars($row['life_orientation']) : '-'; ?></td>
                             <td><?php echo isset($row['geography']) && $row['geography'] !== '' ? htmlspecialchars($row['geography']) : '-'; ?></td>
+                     <td><button><a href="PDF.php?student=<?php echo urlencode($row['student_name']); ?>">PDF</a></button></td>
                         </tr>
                     <?php endwhile; ?>
                 <?php else: ?>

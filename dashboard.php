@@ -8,10 +8,7 @@ if (!isset($_SESSION['username'])) {
 }
 
 // Database connection
-$servername = "localhost";
-$username = "root";
-$password = "";
-$dbname = "report";
+include 'connection.php'; // Include your database connection file
 
 $conn = new mysqli($servername, $username, $password, $dbname);
 
@@ -108,7 +105,7 @@ $result = $conn->query($sql);
     <br>
   
     <div class="container">
-    <button class="btn">  <a href ="details.php">view details</a> </button>
+    <button class="btn" style="color:black;">  <a href ="details.php">view details</a> </button>
     <button class="btn"><a href="teacher.php">teacher</a></button>
     <button class="btn">  <a href="logout.php">logout</a> </button>
    
